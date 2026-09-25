@@ -577,15 +577,43 @@ func TestGetMapsPullRequestFields(t *testing.T) {
 	}
 }
 
+func TestGetFailsNamingThePullRequestWhenItsDiffstatFails(t *testing.T) {
+	// given
+	// ... a pull request whose diffstat is refused
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case prPath:
+			_, _ = fmt.Fprint(w, pullRequestWithParticipants(""))
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"type":"error","error":{"message":"Something broke"}}`)
+		}
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
+
+	// when
+	// ... the pull request is read
+	got, err := c.Get(context.Background(), 7)
+
+	// then
+	// ... it fails with Bitbucket's reason first, naming the pull request, and returns nothing
+	if err == nil || !strings.HasPrefix(err.Error(), "Something broke") || !strings.Contains(err.Error(), "pull request 7") {
+		t.Fatalf("got %v", err)
+	}
+	if got != nil {
+		t.Errorf("want no pull request, got %+v", got)
+	}
+}
+
 func TestGetTurnsParticipantDecisionsIntoVerdicts(t *testing.T) {
 	// given
 	// ... one participant approved, one requested changes and one only commented
-	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+	srv := serve(t, withEmptyDiffstats(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, pullRequestWithParticipants(`
 			{"user":{"nickname":"ann"},"state":"approved","participated_on":"2026-09-21T09:00:00+00:00"},
 			{"user":{"nickname":"bob"},"state":"changes_requested","participated_on":"2026-09-22T09:00:00+00:00"},
 			{"user":{"nickname":"cat"},"state":null,"participated_on":"2026-09-23T09:00:00+00:00"}`))
-	})
+	}))
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
@@ -609,9 +637,9 @@ func TestGetTurnsParticipantDecisionsIntoVerdicts(t *testing.T) {
 func TestGetRejectsAnUnknownParticipantState(t *testing.T) {
 	// given
 	// ... a participant in a state Bitbucket has not documented
-	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+	srv := serve(t, withEmptyDiffstats(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, pullRequestWithParticipants(`{"user":{"nickname":"ann"},"state":"vetoed"}`))
-	})
+	}))
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
