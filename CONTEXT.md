@@ -58,8 +58,9 @@ The version of a file a line belongs to: base (before the change) or head
 _Avoid_: Left, right, from, to, old, new
 
 **Own pull request**:
-A pull request the user opened. A verdict on it posts as a comment headed with
-the verdict, because code hosts do not accept a verdict from the author.
+A pull request the user opened. On GitHub a verdict on it posts as a comment
+headed with the verdict, because GitHub does not accept a verdict from the
+author. Bitbucket accepts one, so there the verdict is sent.
 
 ### Agent review
 

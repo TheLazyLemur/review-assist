@@ -72,9 +72,9 @@ func (h *recordingHost) PostComment(_ context.Context, _ int, c pr.NewComment) e
 	return nil
 }
 
-func TestVerdictOnYourOwnPRPostsAsAHeadedComment(t *testing.T) {
+func TestVerdictOnYourOwnGitHubPRPostsAsAHeadedComment(t *testing.T) {
 	// given
-	// ... a PR opened by the viewer (logins differ only in case), and one opened by someone else
+	// ... a GitHub PR opened by the viewer (logins differ only in case), and one opened by someone else
 	host := &recordingHost{}
 	svc := pr.NewService(host, pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "o", Name: "r"})
 	own := &pr.PR{Summary: pr.Summary{Number: 1, Author: "TheLazyLemur"}}
@@ -108,5 +108,36 @@ func TestVerdictOnYourOwnPRPostsAsAHeadedComment(t *testing.T) {
 	}
 	if !slices.Equal(host.verdicts, []pr.Decision{pr.RequestChanges}) {
 		t.Errorf("verdicts: got %v", host.verdicts)
+	}
+}
+
+func TestVerdictOnYourOwnBitbucketPRIsSentAsAVerdict(t *testing.T) {
+	// given
+	// ... a Bitbucket PR opened by the viewer
+	host := &recordingHost{}
+	svc := pr.NewService(host, pr.Repo{Platform: pr.Bitbucket, Hostname: "bitbucket.org", Owner: "o", Name: "r"})
+	own := &pr.PR{Summary: pr.Summary{Number: 1, Author: "TheLazyLemur"}}
+	ctx := context.Background()
+
+	// when
+	// ... the viewer requests changes, then approves
+	var asComment [2]bool
+	var errs [2]error
+	asComment[0], errs[0] = svc.SubmitVerdict(ctx, own, "thelazylemur", pr.RequestChanges, "fix the loop")
+	asComment[1], errs[1] = svc.SubmitVerdict(ctx, own, "thelazylemur", pr.Approve, "")
+
+	// then
+	// ... both are sent to the code host as verdicts, not comments
+	if errs != [2]error{} {
+		t.Fatalf("errors: %v", errs)
+	}
+	if asComment != [2]bool{} {
+		t.Errorf("posted as comment: %v", asComment)
+	}
+	if !slices.Equal(host.verdicts, []pr.Decision{pr.RequestChanges, pr.Approve}) {
+		t.Errorf("verdicts: got %v", host.verdicts)
+	}
+	if len(host.comments) != 0 {
+		t.Errorf("comments: got %q", host.comments)
 	}
 }

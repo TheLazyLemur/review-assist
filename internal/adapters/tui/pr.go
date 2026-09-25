@@ -157,11 +157,10 @@ func (m *Model) requestChanges() tea.Cmd {
 	return m.verdictEditor(pr.RequestChanges, fmt.Sprintf("Request changes on #%d", m.pr.number), "Explain what needs to change.", true)
 }
 
-// verdictEditor warns up front when the verdict will post as a comment: the
-// code host refuses a verdict on the viewer's own pull request.
+// verdictEditor warns up front when the verdict will post as a comment.
 func (m *Model) verdictEditor(decision pr.Decision, title, hint string, required bool) tea.Cmd {
 	p, viewer := m.pr.data.PR, m.viewer
-	if pr.IsOwn(p.Author, viewer) {
+	if m.deps.PRs.VerdictPostsAsComment(p, viewer) {
 		hint += "\nThis is your PR, so it posts as a comment headed with the verdict."
 	}
 	what := strings.ToLower(title[:1]) + title[1:]
