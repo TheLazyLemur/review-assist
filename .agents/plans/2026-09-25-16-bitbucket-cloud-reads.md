@@ -15,6 +15,21 @@ Issue: https://github.com/TheLazyLemur/review-assist/issues/16
   (#18) are missing. Nothing wires it in (#20).
 - Additions, deletions, changed files, labels, checks and `ReviewDecision` are
   not in Bitbucket's pull request JSON and stay zero.
+- Added in review:
+  - `List` sends `sort=-updated_on` and stops at 100, as the GitHub adapter
+    does with `--limit 100`.
+  - The client has a 60s timeout: callers pass `context.Background()`, so
+    nothing else bounds a stalled response.
+  - A `next` link that is not under the base URL is refused: it comes from
+    the response body, and every request carries the credentials.
+  - Outdated inline comments are left out, as on GitHub: their lines belong to
+    an older commit. Pending (unsubmitted) comments are left out.
+  - `start_from`/`start_to` map to `StartLine`/`StartSide`. A range keeps its
+    start when the line or the side differs from the end.
+  - An inline comment with no path, or a range start with no end line, is an
+    error.
+- `ReplyTo` is the immediate parent on Bitbucket but the thread root on
+  GitHub. #17's `Reply` must not copy GitHub's root logic.
 
 ## Bitbucket API used
 
