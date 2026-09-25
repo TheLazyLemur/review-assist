@@ -33,26 +33,35 @@ func pullRequestJSON(id int, state, nickname string) string {
 
 func TestEveryRequestCarriesBasicAuthOfEmailAndToken(t *testing.T) {
 	// given
-	// ... a server that records the Authorization header
-	var got string
-	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		got = r.Header.Get("Authorization")
-		fmt.Fprint(w, `{"nickname":"dan"}`)
+	// ... a server that records the Authorization header of every request, with pull requests over two pages
+	var got []string
+	var srv *httptest.Server
+	srv = serve(t, func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("Authorization"))
+		switch {
+		case r.URL.Path == "/user":
+			fmt.Fprint(w, `{"nickname":"dan"}`)
+		case r.URL.Query().Get("page") == "2":
+			fmt.Fprintf(w, `{"values":[%s]}`, pullRequestJSON(2, "OPEN", "dan"))
+		default:
+			fmt.Fprintf(w, `{"values":[%s],"next":"%s%s?state=OPEN&pagelen=50&page=2"}`, pullRequestJSON(1, "OPEN", "dan"), srv.URL, listPath)
+		}
 	})
 	c := bitbucket.NewClient(srv.URL, "dan@example.com", "s3cret", repo)
 
 	// when
-	// ... the viewer is read
-	_, err := c.Viewer(context.Background())
+	// ... the viewer is read and the pull requests are listed
+	_, viewerErr := c.Viewer(context.Background())
+	_, listErr := c.List(context.Background(), pr.Open)
 
 	// then
-	// ... the request is authenticated with the email and API token
-	if err != nil {
-		t.Fatal(err)
+	// ... all three requests are authenticated with the email and API token
+	if viewerErr != nil || listErr != nil {
+		t.Fatalf("viewer: %v, list: %v", viewerErr, listErr)
 	}
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("dan@example.com:s3cret"))
-	if got != want {
-		t.Fatalf("Authorization: want %q, got %q", want, got)
+	if !slices.Equal(got, []string{want, want, want}) {
+		t.Fatalf("Authorization: want %q on 3 requests, got %q", want, got)
 	}
 }
 
@@ -122,6 +131,26 @@ func TestListRequestsTheBitbucketStatesForEachFilter(t *testing.T) {
 				t.Errorf("states: want %v, got %v", tt.wantStates, states)
 			}
 		})
+	}
+}
+
+func TestErrorFallsBackToTheStatusTextForAnUnexpectedBody(t *testing.T) {
+	// given
+	// ... a server that refuses the credentials with a body that is not JSON
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, "<html>denied</html>")
+	})
+	c := bitbucket.NewClient(srv.URL, "dan@example.com", "wrong", repo)
+
+	// when
+	// ... pull requests are listed
+	_, err := c.List(context.Background(), pr.Open)
+
+	// then
+	// ... the error starts with the HTTP status text
+	if err == nil || !strings.HasPrefix(err.Error(), "Unauthorized") {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -256,13 +285,13 @@ func TestViewerOwnsThePullRequestsTheyOpened(t *testing.T) {
 		}
 	})
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
-
-	// when
-	// ... the viewer and the list are read
 	viewer, err := c.Viewer(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// when
+	// ... open pull requests are listed
 	prs, err := c.List(context.Background(), pr.Open)
 
 	// then

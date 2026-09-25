@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -132,8 +133,9 @@ func (c *Client) repoPath(rest string) string {
 
 // getAll reads every page of a list endpoint.
 func getAll[T any](ctx context.Context, c *Client, path string, query url.Values) ([]T, error) {
-	query.Set("pagelen", "50")
-	next := c.baseURL + path + "?" + query.Encode()
+	q := maps.Clone(query)
+	q.Set("pagelen", "50")
+	next := c.baseURL + path + "?" + q.Encode()
 	var all []T
 	for next != "" {
 		// next comes from the response body; the credentials must not follow
