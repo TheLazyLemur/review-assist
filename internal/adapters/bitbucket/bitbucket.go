@@ -119,33 +119,49 @@ type commentDTO struct {
 	User      userDTO   `json:"user"`
 	CreatedOn time.Time `json:"created_on"`
 	Deleted   bool      `json:"deleted"`
+	Pending   bool      `json:"pending"`
 	Parent    *struct {
 		ID int64 `json:"id"`
 	} `json:"parent"`
 	Inline *struct {
-		Path string `json:"path"`
-		From *int   `json:"from"`
-		To   *int   `json:"to"`
+		Path      string `json:"path"`
+		From      *int   `json:"from"`
+		To        *int   `json:"to"`
+		StartFrom *int   `json:"start_from"`
+		StartTo   *int   `json:"start_to"`
+		Outdated  bool   `json:"outdated"`
 	} `json:"inline"`
 }
 
-func (d commentDTO) toDomain() pr.Comment {
+// lineOnSide reads a Bitbucket from/to pair. When both are set the line is
+// context, which the domain anchors on the head side.
+func lineOnSide(from, to *int) (int, diff.Side) {
+	switch {
+	case to != nil:
+		return *to, diff.Head
+	case from != nil:
+		return *from, diff.Base
+	}
+	return 0, ""
+}
+
+func (d commentDTO) toDomain() (pr.Comment, error) {
 	c := pr.Comment{ID: d.ID, Author: d.User.Nickname, Body: d.Content.Raw, CreatedAt: d.CreatedOn}
 	if d.Parent != nil {
 		c.ReplyTo = d.Parent.ID
 	}
 	if d.Inline != nil {
-		c.Anchor = &pr.Anchor{Path: d.Inline.Path}
-		// When both are set the line is context, which the domain anchors on
-		// the head side.
-		switch {
-		case d.Inline.To != nil:
-			c.Anchor.Line, c.Anchor.Side = *d.Inline.To, diff.Head
-		case d.Inline.From != nil:
-			c.Anchor.Line, c.Anchor.Side = *d.Inline.From, diff.Base
+		if d.Inline.Path == "" {
+			return pr.Comment{}, fmt.Errorf("comment %d: inline without a path", d.ID)
 		}
+		a := &pr.Anchor{Path: d.Inline.Path}
+		a.Line, a.Side = lineOnSide(d.Inline.From, d.Inline.To)
+		if start, side := lineOnSide(d.Inline.StartFrom, d.Inline.StartTo); a.Line > 0 && start > 0 && start != a.Line {
+			a.StartLine, a.StartSide = start, side
+		}
+		c.Anchor = a
 	}
-	return c
+	return c, nil
 }
 
 type page[T any] struct {
@@ -221,12 +237,14 @@ func (c *Client) Get(ctx context.Context, number int) (*pr.PR, error) {
 }
 
 // Diff relies on net/http following Bitbucket's redirect with the
-// Authorization header, which it keeps only while the host stays the same.
+// Authorization header, which it keeps on a redirect to the same host or one
+// of its subdomains and drops otherwise.
 func (c *Client) Diff(ctx context.Context, number int) (string, error) {
 	body, err := c.do(ctx, c.baseURL+c.pullRequestPath(number, "/diff"))
 	return string(body), err
 }
 
+// Comments leaves out deleted comments and the viewer's pending drafts.
 func (c *Client) Comments(ctx context.Context, number int) ([]pr.Comment, error) {
 	dtos, err := getAll[commentDTO](ctx, c, c.pullRequestPath(number, "/comments"), nil, 0)
 	if err != nil {
@@ -234,10 +252,16 @@ func (c *Client) Comments(ctx context.Context, number int) ([]pr.Comment, error)
 	}
 	var out []pr.Comment
 	for _, d := range dtos {
-		if d.Deleted {
+		// An outdated comment's lines belong to an older commit, so against
+		// this diff it would sit on the wrong line.
+		if d.Deleted || d.Pending || (d.Inline != nil && d.Inline.Outdated) {
 			continue
 		}
-		out = append(out, d.toDomain())
+		cm, err := d.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, cm)
 	}
 	return out, nil
 }

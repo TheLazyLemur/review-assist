@@ -357,8 +357,8 @@ func parseTime(t *testing.T, s string) time.Time {
 func pullRequestWithParticipants(participants string) string {
 	return `{"id":7,"title":"Add basket","description":"Adds a basket.","state":"OPEN","draft":false,
 		"author":{"nickname":"dan"},
-		"source":{"branch":{"name":"feat/basket"},"commit":{"hash":"head123"}},
-		"destination":{"branch":{"name":"main"},"commit":{"hash":"base456"}},
+		"source":{"branch":{"name":"feat/basket"},"commit":{"hash":"a1b2c3d4e5f6"}},
+		"destination":{"branch":{"name":"main"},"commit":{"hash":"f6e5d4c3b2a1"}},
 		"created_on":"2026-09-20T08:00:00.000001+00:00","updated_on":"2026-09-24T10:11:12.123456+00:00",
 		"links":{"html":{"href":"https://bitbucket.org/acme/shop/pull-requests/7"}},
 		"participants":[` + participants + `]}`
@@ -391,7 +391,7 @@ func TestGetMapsPullRequestFields(t *testing.T) {
 			State: "OPEN", UpdatedAt: parseTime(t, "2026-09-24T10:11:12.123456+00:00"),
 		},
 		Body: "Adds a basket.", URL: "https://bitbucket.org/acme/shop/pull-requests/7",
-		HeadSHA: "head123", BaseSHA: "base456", CreatedAt: parseTime(t, "2026-09-20T08:00:00.000001+00:00"),
+		HeadSHA: "a1b2c3d4e5f6", BaseSHA: "f6e5d4c3b2a1", CreatedAt: parseTime(t, "2026-09-20T08:00:00.000001+00:00"),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("want %+v, got %+v", want, got)
@@ -466,8 +466,8 @@ diff --git a/main.go b/main.go
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case prPath + "/diff":
-			http.Redirect(w, r, "/repositories/acme/shop/diff/head123..base456", http.StatusFound)
-		case "/repositories/acme/shop/diff/head123..base456":
+			http.Redirect(w, r, "/repositories/acme/shop/diff/a1b2c3d4e5f6..f6e5d4c3b2a1", http.StatusFound)
+		case "/repositories/acme/shop/diff/a1b2c3d4e5f6..f6e5d4c3b2a1":
 			redirectedAuth = r.Header.Get("Authorization")
 			fmt.Fprint(w, text)
 		default:
@@ -541,17 +541,20 @@ func TestCommentsFollowsNextAcrossPages(t *testing.T) {
 
 func TestCommentsMapWhereEachPoints(t *testing.T) {
 	// given
-	// ... comments on the pull request, a file, a new line and a removed line
+	// ... comments on the pull request, a file, a new line, a removed line and ranges
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != prPath+"/comments" {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprintf(w, `{"values":[%s,%s,%s,%s]}`,
+		fmt.Fprintf(w, `{"values":[%s,%s,%s,%s,%s,%s,%s]}`,
 			commentJSON(1, ""),
 			commentJSON(2, `,"inline":{"path":"a.go","from":null,"to":null}`),
 			commentJSON(3, `,"inline":{"path":"b.go","from":4,"to":5}`),
-			commentJSON(4, `,"inline":{"path":"c.go","from":6,"to":null}`))
+			commentJSON(4, `,"inline":{"path":"c.go","from":6,"to":null}`),
+			commentJSON(5, `,"inline":{"path":"d.go","from":null,"to":9,"start_from":null,"start_to":7}`),
+			commentJSON(6, `,"inline":{"path":"e.go","from":null,"to":9,"start_from":3,"start_to":null}`),
+			commentJSON(7, `,"inline":{"path":"f.go","from":null,"to":9,"start_from":null,"start_to":9}`))
 	})
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
 
@@ -570,6 +573,9 @@ func TestCommentsMapWhereEachPoints(t *testing.T) {
 		{ID: 2, Author: "dan", Body: "c2", CreatedAt: at, Anchor: &pr.Anchor{Path: "a.go"}},
 		{ID: 3, Author: "dan", Body: "c3", CreatedAt: at, Anchor: &pr.Anchor{Path: "b.go", Line: 5, Side: diff.Head}},
 		{ID: 4, Author: "dan", Body: "c4", CreatedAt: at, Anchor: &pr.Anchor{Path: "c.go", Line: 6, Side: diff.Base}},
+		{ID: 5, Author: "dan", Body: "c5", CreatedAt: at, Anchor: &pr.Anchor{Path: "d.go", Line: 9, Side: diff.Head, StartLine: 7, StartSide: diff.Head}},
+		{ID: 6, Author: "dan", Body: "c6", CreatedAt: at, Anchor: &pr.Anchor{Path: "e.go", Line: 9, Side: diff.Head, StartLine: 3, StartSide: diff.Base}},
+		{ID: 7, Author: "dan", Body: "c7", CreatedAt: at, Anchor: &pr.Anchor{Path: "f.go", Line: 9, Side: diff.Head}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("want %+v, got %+v", want, got)
@@ -621,5 +627,70 @@ func TestCommentsLeaveOutDeletedOnes(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ID != 1 {
 		t.Errorf("want only comment 1, got %+v", got)
+	}
+}
+
+func TestCommentsLeaveOutOutdatedOnes(t *testing.T) {
+	// given
+	// ... a comment on a current line and one on a line from an older commit
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"values":[%s,%s]}`,
+			commentJSON(1, `,"inline":{"path":"a.go","from":null,"to":3,"outdated":false}`),
+			commentJSON(2, `,"inline":{"path":"a.go","from":null,"to":3,"outdated":true}`))
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+
+	// when
+	// ... the comments are read
+	got, err := c.Comments(context.Background(), 7)
+
+	// then
+	// ... only the current comment comes back
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != 1 {
+		t.Errorf("want only comment 1, got %+v", got)
+	}
+}
+
+func TestCommentsLeaveOutPendingOnes(t *testing.T) {
+	// given
+	// ... a posted comment and an unsubmitted draft
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"values":[%s,%s]}`, commentJSON(1, `,"pending":false`), commentJSON(2, `,"pending":true`))
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+
+	// when
+	// ... the comments are read
+	got, err := c.Comments(context.Background(), 7)
+
+	// then
+	// ... only the posted comment comes back
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != 1 {
+		t.Errorf("want only comment 1, got %+v", got)
+	}
+}
+
+func TestCommentsRejectAnInlineCommentWithNoPath(t *testing.T) {
+	// given
+	// ... an inline comment without the path Bitbucket's schema requires
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"values":[%s]}`, commentJSON(42, `,"inline":{"from":null,"to":3}`))
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+
+	// when
+	// ... the comments are read
+	_, err := c.Comments(context.Background(), 7)
+
+	// then
+	// ... it fails naming the comment
+	if err == nil || !strings.Contains(err.Error(), "42") {
+		t.Fatalf("got %v", err)
 	}
 }
