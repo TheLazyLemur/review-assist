@@ -3,6 +3,7 @@ package github_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -73,5 +74,63 @@ func TestFailedCommandErrorLeadsWithTheReason(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), long) {
 		t.Errorf("error repeats the full arguments: %v", err)
+	}
+}
+
+type cannedRunner struct {
+	out string
+	err error
+}
+
+func (r cannedRunner) Run(context.Context, []byte, string, ...string) ([]byte, error) {
+	return []byte(r.out), r.err
+}
+
+func TestPlatformsCountsHostnamesGhIsLoggedInToAsGitHub(t *testing.T) {
+	// given
+	// ... gh logged in to github.com and an enterprise server
+	run := cannedRunner{out: `{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com"}],"ghe.example.com":[{"state":"success","active":true,"host":"ghe.example.com"}]}}`}
+	platformOf := github.Platforms(context.Background(), run)
+
+	// when
+	// ... the enterprise server, bitbucket.org and an unknown hostname are looked up
+	ghe, gheOK, gheErr := platformOf("ghe.example.com")
+	bitbucket, bitbucketOK, bitbucketErr := platformOf("bitbucket.org")
+	_, gitlabOK, gitlabErr := platformOf("gitlab.com")
+
+	// then
+	// ... the enterprise server is GitHub, bitbucket.org is Bitbucket, and the unknown one is on no code host
+	if err := errors.Join(gheErr, bitbucketErr, gitlabErr); err != nil {
+		t.Fatal(err)
+	}
+	if ghe != pr.GitHub || !gheOK {
+		t.Errorf("ghe.example.com: got %q %v", ghe, gheOK)
+	}
+	if bitbucket != pr.Bitbucket || !bitbucketOK {
+		t.Errorf("bitbucket.org: got %q %v", bitbucket, bitbucketOK)
+	}
+	if gitlabOK {
+		t.Error("gitlab.com counted as a code host")
+	}
+}
+
+func TestPlatformsReportsAFailedGhRun(t *testing.T) {
+	// given
+	// ... a gh that fails
+	run := cannedRunner{err: errors.New("gh: command not found")}
+	platformOf := github.Platforms(context.Background(), run)
+
+	// when
+	// ... a hostname that needs gh, and github.com, are looked up
+	_, _, gheErr := platformOf("ghe.example.com")
+	dotcom, dotcomOK, dotcomErr := platformOf("github.com")
+
+	// then
+	// ... the enterprise lookup carries gh's error, and github.com is GitHub without gh
+	if gheErr == nil || !strings.Contains(gheErr.Error(), "gh: command not found") {
+		t.Errorf("ghe.example.com: got %v", gheErr)
+	}
+	if dotcom != pr.GitHub || !dotcomOK || dotcomErr != nil {
+		t.Errorf("github.com: got %q %v %v", dotcom, dotcomOK, dotcomErr)
 	}
 }

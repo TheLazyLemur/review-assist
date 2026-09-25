@@ -45,10 +45,13 @@ Other remotes are ignored. the scheduler clone has two remotes on bitbucket.org,
 `acme/develop`, so review-assist uses `acme`. On a branch that tracks
 nothing, neither step 2 nor step 3 applies, so it refuses to start.
 
-When no remote points at a supported code host, it prints:
+When no remote points at a supported code host, it lists the remotes it
+ignored. An SSH host alias such as `github-work` is not resolved, so it shows
+up here:
 
 ```
 review-assist: no git remote points at a supported code host (GitHub, Bitbucket)
+  origin  github-work/TheLazyLemur/review-assist
 ```
 
 When several do and the rule picks none, it lists them:
@@ -58,8 +61,6 @@ review-assist: several git remotes point at code hosts; check out a branch that 
   acme   bitbucket.org/acme/scheduler
   mirror  bitbucket.org/acme-mirror/scheduler
 ```
-
-Not yet: today the repository comes from `gh repo view`.
 
 ## Settings
 

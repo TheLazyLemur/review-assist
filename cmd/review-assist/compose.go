@@ -79,7 +79,7 @@ func run(args []string) error {
 		return err
 	}
 	runner := github.ExecRunner{Dir: cwd}
-	repo, openPR, localRepo, err := resolveTarget(context.Background(), runner, cfg.target)
+	repo, openPR, localRepo, err := resolveTarget(context.Background(), cwd, runner, cfg.target)
 	if err != nil {
 		return err
 	}
@@ -157,7 +157,8 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 		fmt.Fprint(fs.Output(), `usage: review-assist [flags] [PR]
        review-assist --init    write a first config file that uses Claude Code
 
-With no PR, lists pull requests of the GitHub repository in the current directory.
+With no PR, lists pull requests of the repository found from the git remotes of
+the current directory.
 PR may be a number (in the current repository), a PR URL on github.com or a
 GitHub Enterprise host, OWNER/REPO#N or HOST/OWNER/REPO#N.
 
@@ -220,8 +221,16 @@ func normaliseBaseURL(u string) string {
 	return strings.TrimSuffix(u, "/")
 }
 
-func resolveTarget(ctx context.Context, runner github.Runner, target string) (repo pr.Repo, openPR int, localRepo bool, err error) {
-	local, localErr := github.Detect(ctx, runner)
+func resolveTarget(ctx context.Context, cwd string, runner github.Runner, target string) (pr.Repo, int, bool, error) {
+	repo, openPR, localRepo, err := findTarget(ctx, cwd, runner, target)
+	if err == nil && repo.Platform == pr.Bitbucket {
+		return pr.Repo{}, 0, false, fmt.Errorf("%s is on Bitbucket, which is not supported yet", repo.Qualified())
+	}
+	return repo, openPR, localRepo, err
+}
+
+func findTarget(ctx context.Context, cwd string, runner github.Runner, target string) (repo pr.Repo, openPR int, localRepo bool, err error) {
+	local, localErr := gitrepo.FindRemote(ctx, cwd, github.Platforms(ctx, runner))
 	if target == "" {
 		return local, 0, localErr == nil, localErr
 	}
@@ -232,7 +241,16 @@ func resolveTarget(ctx context.Context, runner github.Runner, target string) (re
 	if err != nil {
 		return pr.Repo{}, 0, false, err
 	}
-	return repo, n, localErr == nil && local == repo, nil
+	return repo, n, localErr == nil && sameRepo(local, repo), nil
+}
+
+// sameRepo ignores case in hostname, owner and name: a remote URL and a pasted
+// PR URL may spell them differently.
+func sameRepo(a, b pr.Repo) bool {
+	return a.Platform == b.Platform &&
+		strings.EqualFold(a.Hostname, b.Hostname) &&
+		strings.EqualFold(a.Owner, b.Owner) &&
+		strings.EqualFold(a.Name, b.Name)
 }
 
 func nonEmpty[T comparable](v T) *T {
