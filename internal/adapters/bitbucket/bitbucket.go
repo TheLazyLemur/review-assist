@@ -81,9 +81,6 @@ func domainState(s string) (string, error) {
 	return "", fmt.Errorf("unknown Bitbucket pull request state %q", s)
 }
 
-// listLimit matches the GitHub adapter's list.
-const listLimit = 100
-
 var bitbucketStates = map[pr.State][]string{
 	pr.Open:   {"OPEN"},
 	pr.Merged: {"MERGED"},
@@ -191,6 +188,9 @@ func (c *Client) Viewer(ctx context.Context) (string, error) {
 	}
 	return u.Nickname, nil
 }
+
+// listLimit matches the GitHub adapter's list.
+const listLimit = 100
 
 func (c *Client) List(ctx context.Context, state pr.State) ([]pr.Summary, error) {
 	states, ok := bitbucketStates[state]

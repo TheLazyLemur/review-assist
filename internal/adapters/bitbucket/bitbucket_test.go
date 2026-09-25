@@ -22,11 +22,28 @@ var repo = pr.Repo{Platform: pr.Bitbucket, Hostname: "bitbucket.org", Owner: "ac
 
 const listPath = "/repositories/acme/shop/pullrequests"
 
+const prPath = "/repositories/acme/shop/pullrequests/7"
+
+// parseTime rather than time.Date: which Location a +00:00 offset decodes to
+// depends on the machine's time zone.
+func parseTime(t *testing.T, s string) time.Time {
+	t.Helper()
+	at, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return at
+}
+
 func serve(t *testing.T, h http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func basicAuth(email, token string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(email+":"+token))
 }
 
 func pullRequestJSON(id int, state, nickname string) string {
@@ -61,7 +78,7 @@ func TestEveryRequestCarriesBasicAuthOfEmailAndToken(t *testing.T) {
 	if viewerErr != nil || listErr != nil {
 		t.Fatalf("viewer: %v, list: %v", viewerErr, listErr)
 	}
-	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("dan@example.com:s3cret"))
+	want := basicAuth("dan@example.com", "s3cret")
 	if !slices.Equal(got, []string{want, want, want}) {
 		t.Fatalf("Authorization: want %q on 3 requests, got %q", want, got)
 	}
@@ -83,6 +100,26 @@ func TestUnauthorisedErrorLeadsWithBitbucketsMessage(t *testing.T) {
 	// then
 	// ... the error starts with Bitbucket's message
 	if err == nil || !strings.HasPrefix(err.Error(), "Invalid credentials") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestErrorFallsBackToTheStatusTextForAnUnexpectedBody(t *testing.T) {
+	// given
+	// ... a server that refuses the credentials with a body that is not JSON
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, "<html>denied</html>")
+	})
+	c := bitbucket.NewClient(srv.URL, "dan@example.com", "wrong", repo)
+
+	// when
+	// ... pull requests are listed
+	_, err := c.List(context.Background(), pr.Open)
+
+	// then
+	// ... the error starts with the HTTP status text
+	if err == nil || !strings.HasPrefix(err.Error(), "Unauthorized") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -133,26 +170,6 @@ func TestListRequestsTheBitbucketStatesForEachFilter(t *testing.T) {
 				t.Errorf("states: want %v, got %v", tt.wantStates, states)
 			}
 		})
-	}
-}
-
-func TestErrorFallsBackToTheStatusTextForAnUnexpectedBody(t *testing.T) {
-	// given
-	// ... a server that refuses the credentials with a body that is not JSON
-	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, "<html>denied</html>")
-	})
-	c := bitbucket.NewClient(srv.URL, "dan@example.com", "wrong", repo)
-
-	// when
-	// ... pull requests are listed
-	_, err := c.List(context.Background(), pr.Open)
-
-	// then
-	// ... the error starts with the HTTP status text
-	if err == nil || !strings.HasPrefix(err.Error(), "Unauthorized") {
-		t.Fatalf("got %v", err)
 	}
 }
 
@@ -341,19 +358,6 @@ func TestViewerOwnsThePullRequestsTheyOpened(t *testing.T) {
 	}
 }
 
-const prPath = "/repositories/acme/shop/pullrequests/7"
-
-// parseTime rather than time.Date: which Location a +00:00 offset decodes to
-// depends on the machine's time zone.
-func parseTime(t *testing.T, s string) time.Time {
-	t.Helper()
-	at, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return at
-}
-
 func pullRequestWithParticipants(participants string) string {
 	return `{"id":7,"title":"Add basket","description":"Adds a basket.","state":"OPEN","draft":false,
 		"author":{"nickname":"dan"},
@@ -485,7 +489,7 @@ diff --git a/main.go b/main.go
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("dan@example.com:s3cret"))
+	wantAuth := basicAuth("dan@example.com", "s3cret")
 	if redirectedAuth != wantAuth {
 		t.Errorf("redirected Authorization: want %q, got %q", wantAuth, redirectedAuth)
 	}
@@ -504,7 +508,7 @@ diff --git a/main.go b/main.go
 
 func commentJSON(id int, extra string) string {
 	return fmt.Sprintf(`{"id":%d,"content":{"raw":"c%d"},"user":{"nickname":"dan"},
-		"created_on":"2026-09-24T10:00:00+00:00","deleted":false%s}`, id, id, extra)
+		"created_on":"2026-09-24T10:00:00+00:00"%s}`, id, id, extra)
 }
 
 func TestCommentsFollowsNextAcrossPages(t *testing.T) {
@@ -613,8 +617,7 @@ func TestCommentsLeaveOutDeletedOnes(t *testing.T) {
 	// given
 	// ... a comment and a deleted one
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"values":[%s,{"id":2,"content":{"raw":""},"user":{"nickname":"dan"},"deleted":true}]}`,
-			commentJSON(1, ""))
+		fmt.Fprintf(w, `{"values":[%s,%s]}`, commentJSON(1, ""), commentJSON(2, `,"deleted":true`))
 	})
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
 
