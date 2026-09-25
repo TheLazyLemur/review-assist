@@ -1,3 +1,4 @@
 /review-assist
-/.claude/
+/.claude/*
+!/.claude/skills/
 /.serena/
