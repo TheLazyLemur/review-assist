@@ -9,8 +9,25 @@ Work that has not happened yet lives in this repo's GitHub Issues. It is the
 only place work-in-flight is recorded. A finding with no issue is a finding
 that is lost.
 
-The `gh` commands, including sub-issues and dependencies, are in
-`docs/agents/issue-tracker.md`. This skill is the conventions.
+Read and write it through one dispatcher, `.claude/skills/tracker/scripts/tracker`.
+It runs `gh`, which uses your own `gh auth login`.
+
+```sh
+tracker=.claude/skills/tracker/scripts/tracker   # path is from the repo root
+$tracker board.list
+```
+
+Methods are `<noun>.<verb>`; `$tracker --help` prints the surface. Every write
+refuses a pull request number (issues and pull requests share one number
+space), a label or status outside the vocabularies below, dropping an issue
+without saying why, and closing a feature that still has open tasks. Set
+`TRACKER_DRY_RUN=1` to print the `gh` commands instead of running them.
+
+Reach past it with raw `gh` only for something the surface does not cover; the
+commands, including sub-issues and dependencies through `gh api`, are in
+`docs/agents/issue-tracker.md`. Hand-written sub-issue and dependency calls are
+where the database-id-versus-number mix-up and the lagging summaries come from;
+removing those is why the dispatcher exists.
 
 ## Granularity
 
@@ -87,6 +104,55 @@ label says one is open.
 - **Discovered during** is a `Discovered during #n` line at the end of the body,
   for an issue found while working on another.
 
+## The surface
+
+```
+board.list [--status S] [--label L]     issue.create --title T --body|--body-file ...
+issue.get <N>                           issue.update <N> --title|--body|--status|--note
+task.list <FEATURE>                     issue.delete <N> --yes
+                                        issue.label.add|remove  <N> <LABEL>
+                                        issue.link.add|remove   <N> <RELATION> <OTHER>
+                                        task.append <FEATURE> <TITLE>
+                                        task.move   <FEATURE> <TASK> --before|--after <OTHER>
+```
+
+Open a feature with its tasks. `issue.create` prints the feature number on
+stdout and nothing else, so it can be captured:
+
+```sh
+n=$($tracker issue.create \
+  --title 'Title as a claim' --body-file body.md --label needs-triage \
+  --task 'Bitbucket CodeHost reads pull requests' --task 'Bitbucket CodeHost posts comments')
+```
+
+Take a task, say where it stopped, and close it:
+
+```sh
+$tracker issue.update 21 --status in-progress
+$tracker issue.update 21 --note 'Reads work; posting next.'
+$tracker issue.update 21 --status done
+```
+
+A task's pull request says `Closes #21`, so merging it closes the task anyway.
+Close the feature when its last task lands; the dispatcher refuses while any
+task is open:
+
+```sh
+$tracker issue.update 20 --status done --note 'All tasks landed.'
+```
+
+Declare a blocker from the blocked side, and reorder tasks:
+
+```sh
+$tracker issue.link.add 23 blocked-by 22
+$tracker task.move 20 23 --before 21
+```
+
+`scripts/tracker-test` covers the surface, every refusal and the quoting against
+`TRACKER_DRY_RUN=1`, so it touches no network and no issue. Run it after
+editing the dispatcher. It does not prove the queries against GitHub: after a
+change to a query, run the method once against a throwaway repo.
+
 ## Rules
 
 - Anything that survives the session goes in the tracker before it is
@@ -94,4 +160,5 @@ label says one is open.
   request prose.
 - Close a task the moment it is true, not at the end of the turn.
 - Do not invent a status or a label outside the vocabularies above.
+- Write through the dispatcher. Raw `gh` is for reads the surface lacks.
 - A spec or a plan is never an issue.

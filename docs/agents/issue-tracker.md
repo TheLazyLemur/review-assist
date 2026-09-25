@@ -1,7 +1,9 @@
 # Issue tracker: GitHub
 
-Issues for this repo live as GitHub issues. Use the `gh` CLI for all operations;
-it infers the repo from `git remote -v` when run inside the clone.
+Issues for this repo live as GitHub issues. Write through the dispatcher,
+`.claude/skills/tracker/scripts/tracker`, described in the `tracker` skill. The
+raw `gh` commands below are for reads it does not cover; `gh` infers the repo
+from `git remote -v` when run inside the clone.
 
 ## Conventions
 
@@ -48,8 +50,9 @@ Traps, all observed:
 - `issue_dependencies_summary` on an issue lags a write. Read the `blocked_by`
   list above, not the summary, straight after declaring a blocker. Its
   `blocked_by` counts open blockers only; `total_blocked_by` counts all.
-- `sub_issues_summary` counts a task closed as not planned as completed, so a
-  feature's progress percentage includes dropped tasks.
+- `sub_issues_summary` lags a write too, and it counts a task closed as not
+  planned as completed. Count the task list instead; the dispatcher's
+  `board.list` does.
 - A feature stays open when its last task closes, even at 100%. Close it by hand.
 
 ## Pull requests as a triage surface
