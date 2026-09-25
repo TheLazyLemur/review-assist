@@ -1,8 +1,8 @@
 # review-assist
 
 A terminal UI for reviewing GitHub pull requests, with optional AI review
-agents. Agents run on any Anthropic-compatible endpoint (Ollama, Anthropic, a
-proxy) or on Claude Code. The agents only suggest. They cannot post.
+agents. Agents run on a Messages API endpoint (Ollama, Anthropic, a proxy) or
+on Claude Code. The agents only suggest. They cannot post.
 
 Built with bubbletea, lipgloss and glamour (the renderer glow uses). It talks
 to GitHub through `gh`, so github.com and GitHub Enterprise both work with
@@ -39,19 +39,24 @@ file.
 
 | config file key | env | flag | default |
 |---|---|---|---|
-| `backend` | `REVIEW_ASSIST_BACKEND` | `-backend` | `anthropic`; or `claude-code` |
+| `backend` | `REVIEW_ASSIST_BACKEND` | `-backend` | `messages-api`; or `claude-code` |
 | (model of the chosen backend) | `REVIEW_ASSIST_MODEL` | `-model` | see below |
-| `anthropic.model` | | | `deepseek-v4.1-flash:cloud` |
-| `anthropic.base_url` | `REVIEW_ASSIST_BASE_URL` | `-base-url` (alias `-ollama`) | `OLLAMA_HOST`, else `http://localhost:11434` |
-| `anthropic.api_key` | `REVIEW_ASSIST_API_KEY` | `-api-key` | `ANTHROPIC_API_KEY`, else a placeholder (local Ollama needs no key) |
-| `anthropic.think` | | `-think` | off |
-| `anthropic.log` | `REVIEW_ASSIST_LOG` | `-log FILE` | off; one line per model call |
+| (effort of the chosen backend) | `REVIEW_ASSIST_EFFORT` | `-effort` | see below |
+| `messages_api.model` | | | `deepseek-v4.1-flash:cloud` |
+| `messages_api.effort` | | | `none` (thinking off) |
+| `messages_api.base_url` | `REVIEW_ASSIST_BASE_URL` | `-base-url` (alias `-ollama`) | `OLLAMA_HOST`, else `http://localhost:11434` |
+| `messages_api.api_key` | `REVIEW_ASSIST_API_KEY` | `-api-key` | `ANTHROPIC_API_KEY`, else a placeholder (local Ollama needs no key) |
+| `messages_api.log` | `REVIEW_ASSIST_LOG` | `-log FILE` | off; one line per model call |
 | `claude_code.token` | `REVIEW_ASSIST_CLAUDE_TOKEN` | | required for `claude-code` |
 | `claude_code.model` | | | claude's default |
-| `claude_code.effort` | | `-effort` | claude's default |
+| `claude_code.effort` | | | claude's default |
 | `claude_code.executable` | | | `claude` on `PATH` |
 | `review.concurrency` | | `-concurrency` | 4 agents at once |
 | `review.max_turns` | | `-max-turns` | 40 model turns per agent |
+
+Effort is `none`, `low`, `medium`, `high`, `xhigh` or `max`: how hard each
+model reasons. It is separate from the review level, which sets how many
+agents run. `claude-code` has no `none`.
 
 `OLLAMA_HOST` and `ANTHROPIC_API_KEY` are shared with other tools, so they only
 replace the built-in default. They never override the config file.
@@ -73,9 +78,10 @@ key is an error, so a typo fails loudly instead of being ignored.
     "model": "sonnet",
     "effort": "low"
   },
-  "anthropic": {
+  "messages_api": {
     "base_url": "http://localhost:11434",
-    "model": "deepseek-v4.1-flash:cloud"
+    "model": "deepseek-v4.1-flash:cloud",
+    "effort": "none"
   },
   "review": { "concurrency": 4, "max_turns": 40 }
 }
@@ -85,12 +91,18 @@ Keys and tokens in the file are secrets: keep it private (`chmod 600`).
 
 ### Backends
 
-- **`anthropic`** loops over the Messages API (`<base URL>/v1/messages`) with
-  the official SDK. Ollama serves that API, so the default is local Ollama with
-  no key. The model must support tools. Thinking is off by default: with it on,
+There are two kinds of backend. An API backend is looped by review-assist.
+A CLI backend is a command-line agent that runs its own loop; it qualifies
+only if its built-in tools can be turned off (see
+[ADR 0001](docs/adr/0001-cli-backends-must-disable-built-in-tools.md)).
+
+- **`messages-api`** is an API backend. It loops over the Anthropic Messages
+  API (`<base URL>/v1/messages`) with the official SDK. Ollama serves that
+  API, so the default is local Ollama with no key. The model must support
+  tools. Effort defaults to `none`, which turns thinking off: with thinking on,
   models here spent their whole token budget thinking and each turn took
-  20–40 s.
-- **`claude-code`** runs the `claude` CLI, which loops by itself, through
+  20–40 s. Any other effort turns on adaptive thinking at that effort.
+- **`claude-code`** is a CLI backend: the `claude` CLI, through
   [pi-claude](https://github.com/TheLazyLemur/pi-claude). Run
   `review-assist --init`, or mint a token with `claude setup-token` and put it
   in `claude_code.token` yourself. claude runs in bare
@@ -106,13 +118,13 @@ Vim style. Press `?` anywhere for the full list.
 
 - List: `j/k`, `gg/G`, `ctrl+d/u`, `enter` open, `/` filter, `s` open/closed/merged/all, `r` refresh, `o` browser.
 - PR: `1 2 3` or `tab` switch Overview / Diff / Agent. `a` approve, `x` request changes, `C` PR comment,
-  `m` every other action (review comment, merge / squash / rebase, close, reopen, ready / draft,
+  `m` every other action (merge / squash / rebase, close, reopen, ready / draft,
   checkout, delete my PR comment, browser), `A` agent review, `r` refresh, `q` back.
-- Diff: `j/k` lines, `]/[` files, `}/{` hunks, `h/l` scroll sideways, `c` inline comment,
+- Diff: `j/k` lines, `]/[` files, `}/{` hunks, `h/l` scroll sideways, `c` comment on the line,
   `v` then `c` comment on a line range, `F` file comment, `R` reply to the thread on the line,
   `D` delete my comment on the line, `t` hide comments, `f` hide file list, `n/N` next agent finding.
 - Your own PR: GitHub refuses approve and request changes from a PR's author.
-  On your own PR, `a` and `x` post a comment review instead, headed
+  On your own PR, `a` and `x` post a comment instead, headed
   `**Approved**` or `**Changes requested:**`. The editor says so before you post.
 - Editors: `alt+enter` submits (`ctrl+s` and `ctrl+enter` also work where your terminal passes them through; zellij takes `ctrl+s`), `esc` cancels (twice if you typed something). If a post fails, the editor stays open with your text and shows the reason.
 
@@ -170,18 +182,18 @@ cmd/review-assist/
   compose.go       composition root: flags/env, builds adapters, starts the TUI
 internal/core/                 domain core (imports no adapter)
   diff/            unified diff parser; maps each line to its comment anchor
-  pr/              PR types, Host port, Service (loads PRs, checks write rules)
-  review/          levels and lenses, Reviewer, read-only tools;
-                   ports: Agent, CodeSource/Code
+  pr/              PR types, CodeHost port, Service (loads PRs, checks write rules)
+  review/          levels and lenses, Service, read-only tools;
+                   ports: Backend, CodeSource/Code
 internal/adapters/
-  tui/             inbound: bubbletea screens calling pr.Service and review.Reviewer
-  github/          outbound pr.Host over the gh CLI (github.com and GHE)
-  anthropic/       outbound review.Agent: loops over the Anthropic Messages API
-  claudecode/      outbound review.Agent: the claude CLI in bare mode, via pi-claude
+  tui/             inbound: bubbletea screens calling pr.Service and review.Service
+  github/          outbound pr.CodeHost over the gh CLI (github.com and GHE)
+  messagesapi/     outbound review.Backend: loops over the Anthropic Messages API
+  claudecode/      outbound review.Backend: the claude CLI in bare mode, via pi-claude
   gitrepo/         outbound review.CodeSource/Code over git (read commands only)
 ```
 
-The review core has no path to GitHub: `review.Reviewer` gets an `Agent` and a
+The review core has no path to GitHub: `review.Service` gets a `Backend` and a
 `CodeSource`, and neither can post. Each backend runs its own loop but may
 only call the tools the core hands it. Only the TUI calls `pr.Service` writes, and
 only after you submit or confirm.

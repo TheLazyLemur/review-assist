@@ -7,16 +7,18 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/TheLazyLemur/review-assist/internal/core/review"
 )
 
 func TestSettingsApplyFileThenEnvThenFlags(t *testing.T) {
 	// given
-	// ... a config file choosing Claude Code, with a token, plus Anthropic settings and concurrency
+	// ... a config file choosing Claude Code, with a token and effort, plus Messages API settings and concurrency
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	file := `{"backend": "claude-code",
-		"claude_code": {"token": "file-token", "model": "file-model"},
-		"anthropic": {"base_url": "http://file:1", "api_key": "file-key"},
+		"claude_code": {"token": "file-token", "model": "file-model", "effort": "low"},
+		"messages_api": {"base_url": "http://file:1", "api_key": "file-key", "effort": "medium"},
 		"review": {"concurrency": 2}}`
 	if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
 		t.Fatal(err)
@@ -29,19 +31,21 @@ func TestSettingsApplyFileThenEnvThenFlags(t *testing.T) {
 	}
 
 	// when
-	// ... a flag overrides the model again
-	cfg, err := parseConfig([]string{"-model", "flag-model"}, func(k string) string { return env[k] }, path)
+	// ... flags override the model and the effort again
+	cfg, err := parseConfig([]string{"-model", "flag-model", "-effort", "high"}, func(k string) string { return env[k] }, path)
 
 	// then
-	// ... the last source wins for each setting, -model applies to the chosen backend, and untouched settings keep the file value
+	// ... the last source wins for each setting, -model and -effort apply to the chosen backend, and untouched settings keep the file value
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertEqual(t, "claude-code", cfg.backend)
 	assertEqual(t, "flag-model", cfg.claude.Model)
+	assertEqual(t, review.EffortHigh, cfg.claude.Effort)
 	assertEqual(t, "file-token", cfg.claude.Token)
-	assertEqual(t, "http://env:2", cfg.anthropic.BaseURL)
-	assertEqual(t, "file-key", cfg.anthropic.APIKey)
+	assertEqual(t, "http://env:2", cfg.messages.BaseURL)
+	assertEqual(t, "file-key", cfg.messages.APIKey)
+	assertEqual(t, review.EffortMedium, cfg.messages.Effort)
 	assertEqual(t, 2, cfg.concurrency)
 	assertEqual(t, 40, cfg.maxTurns)
 }
@@ -59,6 +63,25 @@ func TestClaudeCodeBackendNeedsASetupToken(t *testing.T) {
 	// ... it refuses to start rather than fall back to another login
 	if err == nil {
 		t.Fatal("want an error for a missing claude_code.token")
+	}
+}
+
+func TestClaudeCodeRejectsNoEffort(t *testing.T) {
+	// given
+	// ... a claude-code config with a token
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"backend": "claude-code", "claude_code": {"token": "t"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// when
+	// ... effort none is asked for, which only the Messages API backend supports
+	_, err := parseConfig([]string{"-effort", "none"}, func(string) string { return "" }, path)
+
+	// then
+	// ... it refuses to start
+	if err == nil {
+		t.Fatal("want an error for effort none on claude-code")
 	}
 }
 

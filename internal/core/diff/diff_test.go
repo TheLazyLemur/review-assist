@@ -66,17 +66,17 @@ func TestParseMapsEveryLineToItsCommentableSide(t *testing.T) {
 
 	// ... and each line maps to the side and number GitHub expects for inline comments
 	h0 := files[0].Hunks[0].Lines
-	assertTarget(t, h0[0], diff.Right, 1) // context "package main"
-	assertTarget(t, h0[1], diff.Left, 2)  // removed import
-	assertTarget(t, h0[2], diff.Right, 2) // added "import ("
-	assertTarget(t, h0[4], diff.Right, 4) // added ")"
-	assertTarget(t, h0[5], diff.Right, 5) // context "func main"
+	assertTarget(t, h0[0], diff.Head, 1) // context "package main"
+	assertTarget(t, h0[1], diff.Base, 2) // removed import
+	assertTarget(t, h0[2], diff.Head, 2) // added "import ("
+	assertTarget(t, h0[4], diff.Head, 4) // added ")"
+	assertTarget(t, h0[5], diff.Head, 5) // context "func main"
 	h1 := files[0].Hunks[1].Lines
 	assertEqual(t, 3, len(h1)) // the "\ No newline" marker is not a line
-	assertTarget(t, h1[0], diff.Left, 10)
-	assertTarget(t, h1[1], diff.Right, 11)
-	assertTarget(t, h1[2], diff.Right, 12)
-	assertTarget(t, files[2].Hunks[0].Lines[0], diff.Left, 1)
+	assertTarget(t, h1[0], diff.Base, 10)
+	assertTarget(t, h1[1], diff.Head, 11)
+	assertTarget(t, h1[2], diff.Head, 12)
+	assertTarget(t, files[2].Hunks[0].Lines[0], diff.Base, 1)
 }
 
 func assertTarget(t *testing.T, l diff.Line, side diff.Side, line int) {

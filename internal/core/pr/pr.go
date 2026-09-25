@@ -1,5 +1,5 @@
-// Package pr is the pull request domain: the types a review works with, the
-// Host port a code host adapter implements, and the Service the UI calls.
+// Package pr is the pull request domain: its types, the CodeHost port, and
+// the Service the UI calls.
 package pr
 
 import (
@@ -12,16 +12,21 @@ import (
 	"github.com/TheLazyLemur/review-assist/internal/core/diff"
 )
 
+type Platform string
+
+const GitHub Platform = "github"
+
 type Repo struct {
-	Host  string // github.com or a GitHub Enterprise host
-	Owner string
-	Name  string
+	Platform Platform
+	Hostname string // github.com or a GitHub Enterprise server
+	Owner    string
+	Name     string
 }
 
 func (r Repo) FullName() string { return r.Owner + "/" + r.Name }
 
-// Qualified is the HOST/OWNER/REPO form.
-func (r Repo) Qualified() string { return r.Host + "/" + r.FullName() }
+// Qualified is the HOSTNAME/OWNER/REPO form.
+func (r Repo) Qualified() string { return r.Hostname + "/" + r.FullName() }
 
 func (r Repo) URL() string { return "https://" + r.Qualified() }
 
@@ -30,21 +35,21 @@ var (
 	shortRefRe = regexp.MustCompile(`^(?:([^/\s]+)/)?([^/\s]+)/([^/#\s]+)#(\d+)$`)
 )
 
-// ParseRef accepts a PR URL on any host (github.com or GHE), HOST/OWNER/REPO#N
+// ParseRef accepts a PR URL on github.com or a GHE server, HOSTNAME/OWNER/REPO#N
 // or OWNER/REPO#N (github.com).
 func ParseRef(s string) (Repo, int, error) {
 	s = strings.TrimSpace(s)
 	if m := prURLRe.FindStringSubmatch(s); m != nil {
 		n, _ := strconv.Atoi(m[4])
-		return Repo{Host: m[1], Owner: m[2], Name: strings.TrimSuffix(m[3], ".git")}, n, nil
+		return Repo{Platform: GitHub, Hostname: m[1], Owner: m[2], Name: strings.TrimSuffix(m[3], ".git")}, n, nil
 	}
 	if m := shortRefRe.FindStringSubmatch(s); m != nil {
-		host := m[1]
-		if host == "" {
-			host = "github.com"
+		hostname := m[1]
+		if hostname == "" {
+			hostname = "github.com"
 		}
 		n, _ := strconv.Atoi(m[4])
-		return Repo{Host: host, Owner: m[2], Name: m[3]}, n, nil
+		return Repo{Platform: GitHub, Hostname: hostname, Owner: m[2], Name: m[3]}, n, nil
 	}
 	return Repo{}, 0, fmt.Errorf("invalid PR reference %q (use a PR URL, OWNER/REPO#N or HOST/OWNER/REPO#N)", s)
 }
@@ -85,51 +90,28 @@ type PR struct {
 	BaseSHA   string
 	Mergeable string
 	CreatedAt time.Time
-	Reviews   []Review
+	Verdicts  []Verdict
 	Checks    []Check
 }
 
-type Review struct {
-	Author      string
-	Body        string
-	State       string
-	SubmittedAt time.Time
+type Decision string
+
+const (
+	Approve        Decision = "approve"
+	RequestChanges Decision = "request_changes"
+)
+
+type Verdict struct {
+	Author   string
+	Decision Decision
+	Message  string
+	At       time.Time
 }
 
 type Check struct {
 	Name   string
 	Result string // lower case: success, failure, pending, ...
 }
-
-// IssueComment is a PR-level (conversation) comment.
-type IssueComment struct {
-	ID        int64
-	Author    string
-	Body      string
-	CreatedAt time.Time
-}
-
-// ReviewComment is an inline comment on a line, or a comment on a whole file.
-type ReviewComment struct {
-	ID          int64
-	FileLevel   bool
-	InReplyToID int64
-	Path        string
-	Line        int
-	StartLine   int
-	Side        diff.Side
-	Body        string
-	Author      string
-	CreatedAt   time.Time
-}
-
-type ReviewEvent string
-
-const (
-	Approve        ReviewEvent = "approve"
-	RequestChanges ReviewEvent = "request_changes"
-	CommentReview  ReviewEvent = "comment"
-)
 
 type MergeMethod string
 
@@ -139,21 +121,36 @@ const (
 	Rebase      MergeMethod = "rebase"
 )
 
-// InlineComment anchors a comment to a line (or StartLine..Line range) of the diff.
-type InlineComment struct {
-	Body      string
-	CommitSHA string
+// Anchor is where a comment points. Line 0 means the whole file.
+type Anchor struct {
 	Path      string
 	Line      int
 	Side      diff.Side
-	StartLine int       // 0 for a single line
-	StartSide diff.Side // set with StartLine
+	StartLine int // 0 for a single line
+	StartSide diff.Side
+}
+
+type Comment struct {
+	// ID is 0 when the code host cannot delete the comment on its own, such
+	// as the summary of a GitHub review.
+	ID        int64
+	ReplyTo   int64
+	Author    string
+	Body      string
+	CreatedAt time.Time
+	Anchor    *Anchor // nil: about the whole pull request
+}
+
+type NewComment struct {
+	Body   string
+	Anchor *Anchor
+	// HeadSHA is the head commit the user saw; an anchor refers to it.
+	HeadSHA string
 }
 
 // Details is everything the PR screen shows.
 type Details struct {
-	PR             *PR
-	Files          []diff.File
-	ReviewComments []ReviewComment
-	IssueComments  []IssueComment
+	PR       *PR
+	Files    []diff.File
+	Comments []Comment
 }

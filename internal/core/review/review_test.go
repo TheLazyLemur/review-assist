@@ -70,21 +70,21 @@ func TestQuickReviewExploresWithReadToolsAndReturnsAnchoredSuggestions(t *testin
 	details := &pr.Details{PR: &pr.PR{Summary: pr.Summary{Number: 7, Title: "tweak"}, HeadSHA: "h", BaseSHA: "b"}, Files: files}
 	agent := &scriptedAgent{calls: []toolCall{
 		{Name: "get_diff", Input: json.RawMessage(`{"path":"a.go"}`)},
-		{Name: "submit_findings", Input: json.RawMessage(`{"findings":[{"path":"a.go","line":2,"side":"RIGHT","severity":"blocking","confidence":"high","title":"Division by zero","explanation":"Always panics.","suggested_comment":"This divides by zero."}]}`)},
+		{Name: "submit_findings", Input: json.RawMessage(`{"findings":[{"path":"a.go","line":2,"side":"head","severity":"blocking","confidence":"high","title":"Division by zero","explanation":"Always panics.","suggested_comment":"This divides by zero."}]}`)},
 		{Name: "get_diff", Input: json.RawMessage(`{}`)}, // never reached: the task is done
 	}}
-	reviewer := review.NewReviewer(agent, noCode{}, 5, 1)
+	reviewer := review.NewService(agent, noCode{}, 5, 1)
 
 	// when
 	// ... a quick review runs
-	res, err := reviewer.Review(context.Background(), pr.Repo{Host: "h", Owner: "o", Name: "n"}, details, review.LevelQuick, func(review.Event) {})
+	res, err := reviewer.Review(context.Background(), pr.Repo{Platform: pr.GitHub, Hostname: "h", Owner: "o", Name: "n"}, details, review.LevelQuick, func(review.Event) {})
 
 	// then
 	// ... the diff tool returned the annotated diff, and the run stopped at the submission
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(agent.results) != 2 || !strings.Contains(agent.results[0], `R2     +y := x / 0`) {
+	if len(agent.results) != 2 || !strings.Contains(agent.results[0], `H2     +y := x / 0`) {
 		t.Fatalf("want the annotated diff then the submission, got %q", agent.results)
 	}
 

@@ -19,8 +19,8 @@ import (
 
 type Deps struct {
 	PRs       *pr.Service
-	Reviewer  *review.Reviewer
-	ModelName string // shown to the user; the model itself is behind Reviewer
+	Reviews   *review.Service
+	ModelName string // shown to the user; the model itself is behind Reviews
 	Cwd       string
 	LocalRepo bool // the cwd is a checkout of the PR repo (enables `gh pr checkout`)
 	OpenPR    int  // open this PR directly; 0 starts on the list

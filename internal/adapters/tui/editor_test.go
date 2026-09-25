@@ -13,14 +13,14 @@ import (
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 )
 
-// failingHost refuses to post. Other Host methods are not reached.
+// failingHost refuses to post. Other CodeHost methods are not reached.
 type failingHost struct {
-	pr.Host
+	pr.CodeHost
 	posted []string
 }
 
-func (h *failingHost) Comment(_ context.Context, _ int, body string) error {
-	h.posted = append(h.posted, body)
+func (h *failingHost) PostComment(_ context.Context, _ int, c pr.NewComment) error {
+	h.posted = append(h.posted, c.Body)
 	return errors.New("Can not comment on this pull request")
 }
 
@@ -28,7 +28,7 @@ func TestFailedPostKeepsTheEditorAndTheText(t *testing.T) {
 	// given
 	// ... an open PR, and a host that refuses every comment
 	host := &failingHost{}
-	repo := pr.Repo{Host: "github.com", Owner: "o", Name: "r"}
+	repo := pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "o", Name: "r"}
 	m := New(Deps{PRs: pr.NewService(host, repo)})
 	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m.screen, m.pr = screenPR, newPRModel(1)

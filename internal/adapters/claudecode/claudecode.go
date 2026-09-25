@@ -1,4 +1,5 @@
-// Package claudecode implements review.Agent with the claude CLI, through
+// Package claudecode is the Claude Code backend: it implements review.Backend
+// with the claude CLI, through
 // pi-claude.
 //
 // claude runs in bare mode (CLAUDE_CODE_SIMPLE=1, what --bare sets) and logs
@@ -20,27 +21,27 @@ import (
 )
 
 type Config struct {
-	Token      string // from `claude setup-token`
-	Model      string // e.g. "sonnet", "opus" or a full model id; empty uses claude's default
-	Effort     string // low, medium, high, xhigh or max; empty uses claude's default
-	Executable string // claude binary; empty means "claude" on PATH
+	Token      string        // from `claude setup-token`
+	Model      string        // e.g. "sonnet", "opus" or a full model id; empty uses claude's default
+	Effort     review.Effort // any but none; empty uses claude's default
+	Executable string        // claude binary; empty means "claude" on PATH
 	// WorkDir is claude's working directory. Use an empty directory: claude
 	// sees nothing there, and the agents read code only through their tools.
 	WorkDir string
 }
 
-type Agent struct{ cfg Config }
+type Backend struct{ cfg Config }
 
-var _ review.Agent = (*Agent)(nil)
+var _ review.Backend = (*Backend)(nil)
 
-func New(cfg Config) *Agent {
-	if cfg.Token == "" || cfg.WorkDir == "" {
-		panic("claudecode.New: a setup-token and a work dir are required")
+func New(cfg Config) *Backend {
+	if cfg.Token == "" || cfg.WorkDir == "" || !cfg.Effort.Valid() || cfg.Effort == review.EffortNone {
+		panic("claudecode.New: a setup-token, a work dir and a valid effort are required")
 	}
-	return &Agent{cfg: cfg}
+	return &Backend{cfg: cfg}
 }
 
-func (a *Agent) Run(ctx context.Context, task review.Task) error {
+func (a *Backend) Run(ctx context.Context, task review.Task) error {
 	if task.Done == nil || task.FinishTool == "" || task.MaxTurns < 1 {
 		panic(fmt.Sprintf("claudecode.Run: incomplete task %q", task.Name))
 	}
@@ -68,7 +69,7 @@ func (a *Agent) Run(ctx context.Context, task review.Task) error {
 }
 
 // The task's tools must be the only tools claude can call.
-func (a *Agent) options(task review.Task) pi.Options {
+func (a *Backend) options(task review.Task) pi.Options {
 	tools := make([]pi.Tool, 0, len(task.Tools))
 	for _, t := range task.Tools {
 		call := t.Call
@@ -103,7 +104,7 @@ func (a *Agent) options(task review.Task) pi.Options {
 		},
 		Executable:           a.cfg.Executable,
 		Model:                a.cfg.Model,
-		Effort:               a.cfg.Effort,
+		Effort:               string(a.cfg.Effort),
 		MaxTurns:             task.MaxTurns,
 		SystemPrompt:         task.System,
 		NoTools:              pi.NoToolsAll,

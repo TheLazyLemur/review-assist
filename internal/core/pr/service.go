@@ -9,22 +9,17 @@ import (
 	"github.com/TheLazyLemur/review-assist/internal/core/diff"
 )
 
-// Host is the port to the code host holding the PRs of one repository.
-type Host interface {
+type CodeHost interface {
 	List(ctx context.Context, state State) ([]Summary, error)
 	Get(ctx context.Context, number int) (*PR, error)
 	Diff(ctx context.Context, number int) (string, error)
-	ReviewComments(ctx context.Context, number int) ([]ReviewComment, error)
-	IssueComments(ctx context.Context, number int) ([]IssueComment, error)
+	Comments(ctx context.Context, number int) ([]Comment, error)
 	Viewer(ctx context.Context) (string, error)
 
-	SubmitReview(ctx context.Context, number int, event ReviewEvent, body string) error
-	Comment(ctx context.Context, number int, body string) error
-	AddInlineComment(ctx context.Context, number int, c InlineComment) error
-	AddFileComment(ctx context.Context, number int, commitSHA, path, body string) error
-	Reply(ctx context.Context, number int, commentID int64, body string) error
-	DeleteReviewComment(ctx context.Context, id int64) error
-	DeleteIssueComment(ctx context.Context, id int64) error
+	SubmitVerdict(ctx context.Context, number int, decision Decision, message string) error
+	PostComment(ctx context.Context, number int, c NewComment) error
+	Reply(ctx context.Context, number int, parent Comment, body string) error
+	DeleteComment(ctx context.Context, number int, c Comment) error
 
 	Merge(ctx context.Context, number int, method MergeMethod) error
 	Close(ctx context.Context, number int) error
@@ -35,15 +30,15 @@ type Host interface {
 	OpenInBrowser(ctx context.Context, number int) error
 }
 
-// Service is what the UI calls for everything PR related. It checks the rules
-// a request must meet before it reaches the host.
+// Service checks the rules a request must meet before it reaches the code
+// host.
 type Service struct {
-	host Host
+	host CodeHost
 	repo Repo
 }
 
-func NewService(host Host, repo Repo) *Service {
-	if host == nil || repo.Host == "" || repo.Owner == "" || repo.Name == "" {
+func NewService(host CodeHost, repo Repo) *Service {
+	if host == nil || repo.Platform == "" || repo.Hostname == "" || repo.Owner == "" || repo.Name == "" {
 		panic(fmt.Sprintf("pr.NewService: incomplete wiring (host=%v repo=%+v)", host != nil, repo))
 	}
 	return &Service{host: host, repo: repo}
@@ -63,13 +58,12 @@ func (s *Service) Load(ctx context.Context, number int) (*Details, error) {
 		d    Details
 		raw  string
 		wg   sync.WaitGroup
-		errs [4]error
+		errs [3]error
 	)
-	wg.Add(4)
+	wg.Add(3)
 	go func() { defer wg.Done(); d.PR, errs[0] = s.host.Get(ctx, number) }()
 	go func() { defer wg.Done(); raw, errs[1] = s.host.Diff(ctx, number) }()
-	go func() { defer wg.Done(); d.ReviewComments, errs[2] = s.host.ReviewComments(ctx, number) }()
-	go func() { defer wg.Done(); d.IssueComments, errs[3] = s.host.IssueComments(ctx, number) }()
+	go func() { defer wg.Done(); d.Comments, errs[2] = s.host.Comments(ctx, number) }()
 	wg.Wait()
 	for _, err := range errs {
 		if err != nil {
@@ -87,80 +81,67 @@ func (s *Service) Load(ctx context.Context, number int) (*Details, error) {
 	return &d, nil
 }
 
-// ReviewFor handles a review on the viewer's own PR. Code hosts refuse
-// approve and request changes from a PR's author, but the author still
-// reviews code an agent wrote. So those become a comment review whose body
-// opens with the intended verdict. An unknown viewer changes nothing.
-func ReviewFor(author, viewer string, event ReviewEvent, body string) (ReviewEvent, string) {
-	if viewer == "" || !strings.EqualFold(author, viewer) || event == CommentReview {
-		return event, body
-	}
-	verdict := map[ReviewEvent]string{Approve: "Approved", RequestChanges: "Changes requested"}[event]
-	if verdict == "" {
-		panic(fmt.Sprintf("pr.ReviewFor: unknown review event %q", event))
-	}
-	if blank(body) {
-		return CommentReview, "**" + verdict + "**"
-	}
-	return CommentReview, "**" + verdict + ":**\n\n" + body
+// IsOwn reports whether the viewer opened the pull request. An unknown
+// viewer owns nothing.
+func IsOwn(author, viewer string) bool {
+	return viewer != "" && strings.EqualFold(author, viewer)
 }
 
-func (s *Service) SubmitReview(ctx context.Context, number int, event ReviewEvent, body string) error {
-	switch event {
+// SubmitVerdict posts a verdict. On the viewer's own pull request it posts a
+// comment headed with the verdict instead: code hosts refuse a verdict from
+// the author, but the author still reviews code an agent wrote.
+func (s *Service) SubmitVerdict(ctx context.Context, p *PR, viewer string, decision Decision, message string) (postedAsComment bool, err error) {
+	var heading string
+	switch decision {
 	case Approve:
-	case RequestChanges, CommentReview:
-		if blank(body) {
-			return fmt.Errorf("a %s review needs a body", strings.ReplaceAll(string(event), "_", " "))
+		heading = "Approved"
+	case RequestChanges:
+		heading = "Changes requested"
+		if blank(message) {
+			return false, fmt.Errorf("a request for changes needs a message")
 		}
 	default:
-		return fmt.Errorf("unknown review event %q", event)
+		return false, fmt.Errorf("unknown decision %q", decision)
 	}
-	return s.host.SubmitReview(ctx, number, event, body)
+	if !IsOwn(p.Author, viewer) {
+		return false, s.host.SubmitVerdict(ctx, p.Number, decision, message)
+	}
+	body := "**" + heading + "**"
+	if !blank(message) {
+		body = "**" + heading + ":**\n\n" + message
+	}
+	return true, s.host.PostComment(ctx, p.Number, NewComment{Body: body})
 }
 
-func (s *Service) Comment(ctx context.Context, number int, body string) error {
-	if blank(body) {
-		return fmt.Errorf("comment body is empty")
-	}
-	return s.host.Comment(ctx, number, body)
-}
-
-func (s *Service) AddInlineComment(ctx context.Context, number int, c InlineComment) error {
+func (s *Service) PostComment(ctx context.Context, number int, c NewComment) error {
 	if blank(c.Body) {
 		return fmt.Errorf("comment body is empty")
 	}
-	if c.CommitSHA == "" || c.Path == "" || c.Line <= 0 || !validSide(c.Side) {
-		return fmt.Errorf("inline comment is not anchored: %+v", c)
+	if a := c.Anchor; a != nil {
+		switch {
+		case a.Path == "" || c.HeadSHA == "":
+			return fmt.Errorf("an anchored comment needs a path and a head commit: %+v", c)
+		case a.Line < 0 || (a.Line > 0 && !validSide(a.Side)):
+			return fmt.Errorf("comment anchor has no valid line and side: %+v", *a)
+		case a.StartLine != 0 && (a.Line == 0 || a.StartLine < 0 || !validSide(a.StartSide)):
+			return fmt.Errorf("comment range is not anchored: %+v", *a)
+		}
 	}
-	if c.StartLine != 0 && (c.StartLine <= 0 || !validSide(c.StartSide)) {
-		return fmt.Errorf("inline comment range is not anchored: %+v", c)
-	}
-	return s.host.AddInlineComment(ctx, number, c)
+	return s.host.PostComment(ctx, number, c)
 }
 
-func (s *Service) AddFileComment(ctx context.Context, number int, commitSHA, path, body string) error {
-	if blank(body) {
-		return fmt.Errorf("comment body is empty")
-	}
-	if commitSHA == "" || path == "" {
-		return fmt.Errorf("file comment needs a commit and path")
-	}
-	return s.host.AddFileComment(ctx, number, commitSHA, path, body)
-}
-
-func (s *Service) Reply(ctx context.Context, number int, commentID int64, body string) error {
+func (s *Service) Reply(ctx context.Context, number int, parent Comment, body string) error {
 	if blank(body) {
 		return fmt.Errorf("reply body is empty")
 	}
-	return s.host.Reply(ctx, number, commentID, body)
+	return s.host.Reply(ctx, number, parent, body)
 }
 
-func (s *Service) DeleteReviewComment(ctx context.Context, id int64) error {
-	return s.host.DeleteReviewComment(ctx, id)
-}
-
-func (s *Service) DeleteIssueComment(ctx context.Context, id int64) error {
-	return s.host.DeleteIssueComment(ctx, id)
+func (s *Service) DeleteComment(ctx context.Context, number int, c Comment) error {
+	if c.ID == 0 {
+		return fmt.Errorf("the code host cannot delete this comment on its own")
+	}
+	return s.host.DeleteComment(ctx, number, c)
 }
 
 func (s *Service) Merge(ctx context.Context, number int, method MergeMethod) error {
@@ -193,4 +174,4 @@ func (s *Service) OpenInBrowser(ctx context.Context, number int) error {
 
 func blank(s string) bool { return strings.TrimSpace(s) == "" }
 
-func validSide(s diff.Side) bool { return s == diff.Left || s == diff.Right }
+func validSide(s diff.Side) bool { return s == diff.Base || s == diff.Head }

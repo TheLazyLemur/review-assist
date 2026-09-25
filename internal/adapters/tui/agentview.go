@@ -9,7 +9,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/TheLazyLemur/review-assist/internal/core/diff"
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 	"github.com/TheLazyLemur/review-assist/internal/core/review"
 )
@@ -172,13 +171,13 @@ func (m *Model) startAgent(level review.Level) tea.Cmd {
 	m.runs[m.prKey(p.number)] = r
 	p.tab = tabAgent
 	p.findCursor, p.agentScroll = 0, 0
-	reviewer, repo := m.deps.Reviewer, m.deps.PRs.Repo()
+	reviews, repo := m.deps.Reviews, m.deps.PRs.Repo()
 
 	go func() {
 		defer close(r.ch)
 		defer cancel()
 		emit := func(ev review.Event) { r.ch <- agentEventMsg{r, ev} }
-		res, err := reviewer.Review(ctx, repo, details, level, emit)
+		res, err := reviews.Review(ctx, repo, details, level, emit)
 		r.ch <- agentDoneMsg{r, &res, err}
 	}()
 	return tea.Batch(waitAgent(r.ch), m.setStatus(fmt.Sprintf("agent review (%s) of #%d started", level, p.number), false))
@@ -243,27 +242,18 @@ func (m *Model) gotoFile(path string) {
 // suggestion. The human edits and submits; the agent never posts.
 func (m *Model) draftFromFinding(f review.Finding) tea.Cmd {
 	p := m.pr
-	label := fmt.Sprintf("%s:%d (%s)", f.Path, f.Line, f.Side)
 	if !f.Anchored {
-		// GitHub rejects inline comments off the diff; fall back to a file comment.
-		n, sha := p.number, p.data.PR.HeadSHA
-		e := newEditor("File comment (drafted from agent suggestion)", faintStyle.Render(f.Path+" — line not in diff"), f.SuggestedComment, true,
-			func(body string) (string, func(context.Context) error) {
-				return "file comment on " + f.Path, func(c context.Context) error {
-					return m.deps.PRs.AddFileComment(c, n, sha, f.Path, body)
-				}
-			})
-		m.modal = e
-		return e.focus()
+		// A code host rejects a line anchor off the diff; anchor to the file.
+		return m.openAnchoredEditor(&pr.Anchor{Path: f.Path}, f.Path+" (whole file; line not in diff)  · drafted from agent suggestion", "", f.SuggestedComment)
 	}
+	label := fmt.Sprintf("%s:%d (%s)", f.Path, f.Line, f.Side)
 	quote := ""
 	m.gotoFinding(f)
 	if l, ok := p.cursorLine(); ok {
 		quote = expandTabs(l.Text)
 	}
 	p.tab = tabAgent
-	ic := pr.InlineComment{CommitSHA: p.data.PR.HeadSHA, Path: f.Path, Line: f.Line, Side: diff.Side(f.Side)}
-	return m.openInlineEditor(ic, label+"  · drafted from agent suggestion", quote, f.SuggestedComment)
+	return m.openAnchoredEditor(&pr.Anchor{Path: f.Path, Line: f.Line, Side: f.Side}, label+"  · drafted from agent suggestion", quote, f.SuggestedComment)
 }
 
 func (m *Model) agentView(w, h int) string {
@@ -306,7 +296,7 @@ func (m *Model) agentView(w, h int) string {
 func (m *Model) agentIntro(w int) string {
 	var s strings.Builder
 	s.WriteString("# Agent review\n\n")
-	s.WriteString("Press **A** (or enter) to run a review with **" + m.deps.ModelName + "** via Ollama.\n\n")
+	s.WriteString("Press **A** (or enter) to run a review with **" + m.deps.ModelName + "**.\n\n")
 	s.WriteString("Agents are **read-only**. They read the diff and the repository at the PR's head and base (files, grep, history) and suggest where a comment could go. They never post anything; you decide what to send.\n\n")
 	s.WriteString("| level | agents | what runs |\n|---|---|---|\n")
 	for _, l := range review.Levels {
@@ -319,8 +309,8 @@ func (m *Model) findingsView(r *agentRun, w, h int) string {
 	p := m.pr
 	res := r.result
 	var top []string
-	if res.Verdict != "" {
-		top = append(top, lipgloss.NewStyle().Width(w-1).PaddingLeft(1).Render(titleStyle.Render("Verdict: ")+oneLine(res.Verdict)))
+	if res.Assessment != "" {
+		top = append(top, lipgloss.NewStyle().Width(w-1).PaddingLeft(1).Render(titleStyle.Render("Assessment: ")+oneLine(res.Assessment)))
 	}
 	for _, n := range res.Notes {
 		top = append(top, lipgloss.NewStyle().Foreground(orange).Render(fit(" ! "+n, w)))
@@ -355,7 +345,7 @@ func (m *Model) findingsView(r *agentRun, w, h int) string {
 	}
 
 	f := res.Findings[min(p.findCursor, len(res.Findings)-1)]
-	anchor := fmt.Sprintf("`%s` line %d (%s)", f.Path, f.Line, strings.ToLower(f.Side))
+	anchor := fmt.Sprintf("`%s` line %d (%s)", f.Path, f.Line, strings.ToLower(string(f.Side)))
 	if !f.Anchored {
 		anchor += " — _not on a diff line; c drafts a file comment_"
 	}

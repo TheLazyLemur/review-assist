@@ -8,9 +8,9 @@ import (
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 )
 
-// Workspace is everything the agents may look at for one PR: the parsed diff
+// Subject is everything the agents may look at for one PR: the parsed diff
 // and read-only Code at the PR's head and base commits.
-type Workspace struct {
+type Subject struct {
 	HeadSHA  string
 	BaseSHA  string
 	Title    string
@@ -23,8 +23,8 @@ type Workspace struct {
 	baseOK bool
 }
 
-func newWorkspace(ctx context.Context, code Code, d *pr.Details) *Workspace {
-	w := &Workspace{
+func newSubject(ctx context.Context, code Code, d *pr.Details) *Subject {
+	w := &Subject{
 		HeadSHA: d.PR.HeadSHA, BaseSHA: d.PR.BaseSHA, Title: d.PR.Title, Body: d.PR.Body, Files: d.Files,
 		code: code,
 	}
@@ -42,7 +42,7 @@ func newWorkspace(ctx context.Context, code Code, d *pr.Details) *Workspace {
 }
 
 // Degraded explains missing commits, or is empty when both are available.
-func (w *Workspace) Degraded() string {
+func (w *Subject) Degraded() string {
 	var missing []string
 	if !w.headOK {
 		missing = append(missing, "head")
@@ -56,7 +56,7 @@ func (w *Workspace) Degraded() string {
 	return "could not fetch the PR " + strings.Join(missing, " and ") + " commit; agents only see the diff"
 }
 
-func (w *Workspace) file(path string) (diff.File, bool) {
+func (w *Subject) file(path string) (diff.File, bool) {
 	for _, f := range w.Files {
 		if f.Path() == path || f.OldPath == path {
 			return f, true
@@ -65,9 +65,9 @@ func (w *Workspace) file(path string) (diff.File, bool) {
 	return diff.File{}, false
 }
 
-// Anchored reports whether (path, side, line) is a line in the diff, i.e. a
-// place GitHub accepts an inline comment.
-func (w *Workspace) Anchored(path string, side diff.Side, line int) bool {
+// Anchored reports whether (path, side, line) is a line in the diff: a code
+// host accepts a comment anchored there.
+func (w *Subject) Anchored(path string, side diff.Side, line int) bool {
 	f, ok := w.file(path)
 	if !ok {
 		return false

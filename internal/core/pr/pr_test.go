@@ -1,6 +1,8 @@
 package pr_test
 
 import (
+	"context"
+	"slices"
 	"testing"
 
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
@@ -16,41 +18,68 @@ func TestParseRefKeepsTheEnterpriseHost(t *testing.T) {
 	repo, number, err := pr.ParseRef(ref)
 
 	// then
-	// ... host, owner, repo and number are all kept
+	// ... platform, hostname, owner, repo and number are all kept
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := pr.Repo{Host: "ghe.example.com", Owner: "acme", Name: "widgets"}
+	want := pr.Repo{Platform: pr.GitHub, Hostname: "ghe.example.com", Owner: "acme", Name: "widgets"}
 	if repo != want || number != 41 {
 		t.Fatalf("want %+v #41, got %+v #%d", want, repo, number)
 	}
 }
 
-func TestReviewOnYourOwnPRBecomesAMarkedCommentReview(t *testing.T) {
+// recordingHost records posts. Other CodeHost methods are not reached.
+type recordingHost struct {
+	pr.CodeHost
+	verdicts []pr.Decision
+	comments []string
+}
+
+func (h *recordingHost) SubmitVerdict(_ context.Context, _ int, d pr.Decision, _ string) error {
+	h.verdicts = append(h.verdicts, d)
+	return nil
+}
+
+func (h *recordingHost) PostComment(_ context.Context, _ int, c pr.NewComment) error {
+	h.comments = append(h.comments, c.Body)
+	return nil
+}
+
+func TestVerdictOnYourOwnPRPostsAsAHeadedComment(t *testing.T) {
 	// given
-	// ... a PR opened by the viewer (logins differ only in case)
-	author, viewer := "TheLazyLemur", "thelazylemur"
+	// ... a PR opened by the viewer (logins differ only in case), and one opened by someone else
+	host := &recordingHost{}
+	svc := pr.NewService(host, pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "o", Name: "r"})
+	own := &pr.PR{Summary: pr.Summary{Number: 1, Author: "TheLazyLemur"}}
+	other := &pr.PR{Summary: pr.Summary{Number: 2, Author: "someone"}}
+	ctx := context.Background()
 
 	// when
-	// ... the viewer requests changes, approves, and approves with no message
-	changes, changesBody := pr.ReviewFor(author, viewer, pr.RequestChanges, "fix the loop")
-	approve, approveBody := pr.ReviewFor(author, viewer, pr.Approve, "ship it")
-	bare, bareBody := pr.ReviewFor(author, viewer, pr.Approve, "")
+	// ... the viewer requests changes and approves (with and without a message) on their own PR, then requests changes on the other
+	var asComment [4]bool
+	var errs [4]error
+	asComment[0], errs[0] = svc.SubmitVerdict(ctx, own, "thelazylemur", pr.RequestChanges, "fix the loop")
+	asComment[1], errs[1] = svc.SubmitVerdict(ctx, own, "thelazylemur", pr.Approve, "ship it")
+	asComment[2], errs[2] = svc.SubmitVerdict(ctx, own, "thelazylemur", pr.Approve, "")
+	asComment[3], errs[3] = svc.SubmitVerdict(ctx, other, "thelazylemur", pr.RequestChanges, "fix")
 
 	// then
-	// ... each becomes a comment review whose body opens with the intended verdict
-	if changes != pr.CommentReview || changesBody != "**Changes requested:**\n\nfix the loop" {
-		t.Errorf("request changes: got %s %q", changes, changesBody)
+	// ... every call succeeds, and only the own-PR verdicts turn into comments
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
 	}
-	if approve != pr.CommentReview || approveBody != "**Approved:**\n\nship it" {
-		t.Errorf("approve: got %s %q", approve, approveBody)
-	}
-	if bare != pr.CommentReview || bareBody != "**Approved**" {
-		t.Errorf("bare approve: got %s %q", bare, bareBody)
+	if asComment != [4]bool{true, true, true, false} {
+		t.Errorf("posted as comment: %v", asComment)
 	}
 
-	// ... and a review on someone else's PR is unchanged
-	if e, b := pr.ReviewFor("someone", viewer, pr.RequestChanges, "fix"); e != pr.RequestChanges || b != "fix" {
-		t.Errorf("other author: got %s %q", e, b)
+	// ... each comment opens with the verdict, and the other PR gets a real verdict
+	want := []string{"**Changes requested:**\n\nfix the loop", "**Approved:**\n\nship it", "**Approved**"}
+	if !slices.Equal(host.comments, want) {
+		t.Errorf("comments: got %q", host.comments)
+	}
+	if !slices.Equal(host.verdicts, []pr.Decision{pr.RequestChanges}) {
+		t.Errorf("verdicts: got %v", host.verdicts)
 	}
 }

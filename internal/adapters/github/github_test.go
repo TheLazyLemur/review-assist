@@ -22,20 +22,21 @@ func (r *recordingRunner) Run(_ context.Context, stdin []byte, _ string, args ..
 	return nil, nil
 }
 
-func TestInlineCommentPostsAnchoredPayloadToTheRepoHost(t *testing.T) {
+func TestAnchoredCommentPostsGitHubsPayloadToTheServer(t *testing.T) {
 	// given
 	// ... a client for an enterprise repo
 	run := &recordingRunner{}
-	c := github.NewClient(run, pr.Repo{Host: "ghe.example.com", Owner: "acme", Name: "widgets"})
+	c := github.NewClient(run, pr.Repo{Platform: pr.GitHub, Hostname: "ghe.example.com", Owner: "acme", Name: "widgets"})
 
 	// when
-	// ... a multi-line inline comment is added
-	err := c.AddInlineComment(context.Background(), 41, pr.InlineComment{
-		Body: "nit", CommitSHA: "abc", Path: "a.go", Line: 12, Side: diff.Right, StartLine: 10, StartSide: diff.Right,
+	// ... a comment anchored to a range of head lines is posted
+	err := c.PostComment(context.Background(), 41, pr.NewComment{
+		Body: "nit", HeadSHA: "abc",
+		Anchor: &pr.Anchor{Path: "a.go", Line: 12, Side: diff.Head, StartLine: 10, StartSide: diff.Head},
 	})
 
 	// then
-	// ... gh api targets the enterprise host and the pull comments endpoint with the JSON payload
+	// ... gh api targets the enterprise server with GitHub's payload, sides spelled RIGHT
 	if err != nil {
 		t.Fatal(err)
 	}

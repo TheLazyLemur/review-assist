@@ -14,35 +14,35 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/TheLazyLemur/review-assist/internal/adapters/anthropic"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/claudecode"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/github"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/gitrepo"
+	"github.com/TheLazyLemur/review-assist/internal/adapters/messagesapi"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/tui"
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 	"github.com/TheLazyLemur/review-assist/internal/core/review"
 )
 
 const (
-	backendAnthropic  = "anthropic"
-	backendClaudeCode = "claude-code"
+	backendMessagesAPI = "messages-api"
+	backendClaudeCode  = "claude-code"
 
-	defaultAnthropicModel = "deepseek-v4.1-flash:cloud"
+	defaultMessagesModel = "deepseek-v4.1-flash:cloud"
 )
 
 type config struct {
 	backend     string
-	anthropic   anthropic.Config
+	messages    messagesapi.Config
 	claude      claudecode.Config // WorkDir is set by run
 	maxTurns    int
 	concurrency int
 	target      string // optional PR argument
 }
 
-func (c config) agent(cacheDir string) (review.Agent, string, error) {
+func (c config) newBackend(cacheDir string) (review.Backend, string, error) {
 	switch c.backend {
-	case backendAnthropic:
-		return anthropic.New(c.anthropic), c.anthropic.Model, nil
+	case backendMessagesAPI:
+		return messagesapi.New(c.messages), c.messages.Model, nil
 	case backendClaudeCode:
 		// An empty, private directory: claude sees no project there, and
 		// reads code only through the review tools.
@@ -88,20 +88,20 @@ func run(args []string) error {
 		return fmt.Errorf("no cache dir: %w", err)
 	}
 	cache = filepath.Join(cache, "review-assist")
-	agent, modelName, err := cfg.agent(cache)
+	backend, modelName, err := cfg.newBackend(cache)
 	if err != nil {
 		return err
 	}
 
 	prs := pr.NewService(github.NewClient(runner, repo), repo)
-	reviewer := review.NewReviewer(
-		agent,
+	reviews := review.NewService(
+		backend,
 		gitrepo.Source{Cwd: cwd, CacheDir: cache},
 		cfg.maxTurns, cfg.concurrency,
 	)
 	app := tui.New(tui.Deps{
 		PRs:       prs,
-		Reviewer:  reviewer,
+		Reviews:   reviews,
 		ModelName: modelName,
 		Cwd:       cwd,
 		LocalRepo: localRepo,
@@ -116,11 +116,11 @@ func run(args []string) error {
 // replace the built-in defaults and never override the config file.
 func parseConfig(args []string, getenv func(string) string, configFile string) (config, error) {
 	cfg := config{
-		backend: backendAnthropic,
-		anthropic: anthropic.Config{
+		backend: backendMessagesAPI,
+		messages: messagesapi.Config{
 			BaseURL: firstSet(getenv("OLLAMA_HOST"), "http://localhost:11434"),
 			APIKey:  firstSet(getenv("ANTHROPIC_API_KEY"), "ollama"), // the SDK needs a key; Ollama ignores it
-			Model:   defaultAnthropicModel,
+			Model:   defaultMessagesModel,
 		},
 		maxTurns:    40,
 		concurrency: 4,
@@ -128,13 +128,13 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 	if err := loadConfigFile(configFile, &cfg); err != nil {
 		return cfg, err
 	}
-	// REVIEW_ASSIST_MODEL and -model apply to whichever backend ends up chosen.
-	model := getenv("REVIEW_ASSIST_MODEL")
+	// Model and effort apply to whichever backend ends up chosen.
+	model, effort := getenv("REVIEW_ASSIST_MODEL"), getenv("REVIEW_ASSIST_EFFORT")
 	for env, dst := range map[string]*string{
 		"REVIEW_ASSIST_BACKEND":      &cfg.backend,
-		"REVIEW_ASSIST_BASE_URL":     &cfg.anthropic.BaseURL,
-		"REVIEW_ASSIST_API_KEY":      &cfg.anthropic.APIKey,
-		"REVIEW_ASSIST_LOG":          &cfg.anthropic.LogPath,
+		"REVIEW_ASSIST_BASE_URL":     &cfg.messages.BaseURL,
+		"REVIEW_ASSIST_API_KEY":      &cfg.messages.APIKey,
+		"REVIEW_ASSIST_LOG":          &cfg.messages.LogPath,
 		"REVIEW_ASSIST_CLAUDE_TOKEN": &cfg.claude.Token,
 	} {
 		if v := getenv(env); v != "" {
@@ -143,15 +143,14 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 	}
 
 	fs := flag.NewFlagSet("review-assist", flag.ContinueOnError)
-	fs.StringVar(&cfg.backend, "backend", cfg.backend, "agent backend: anthropic or claude-code (env REVIEW_ASSIST_BACKEND)")
-	fs.StringVar(&model, "model", model, "model for review agents, for the chosen backend (env REVIEW_ASSIST_MODEL)")
-	fs.StringVar(&cfg.anthropic.BaseURL, "base-url", cfg.anthropic.BaseURL, "anthropic: API base URL (env REVIEW_ASSIST_BASE_URL)")
-	fs.StringVar(&cfg.anthropic.BaseURL, "ollama", cfg.anthropic.BaseURL, "deprecated alias of -base-url")
+	fs.StringVar(&cfg.backend, "backend", cfg.backend, "backend: messages-api or claude-code (env REVIEW_ASSIST_BACKEND)")
+	fs.StringVar(&model, "model", model, "model for the chosen backend (env REVIEW_ASSIST_MODEL)")
+	fs.StringVar(&effort, "effort", effort, "effort for the chosen backend: none, low, medium, high, xhigh or max (env REVIEW_ASSIST_EFFORT)")
+	fs.StringVar(&cfg.messages.BaseURL, "base-url", cfg.messages.BaseURL, "messages-api: API base URL (env REVIEW_ASSIST_BASE_URL)")
+	fs.StringVar(&cfg.messages.BaseURL, "ollama", cfg.messages.BaseURL, "deprecated alias of -base-url")
 	// No defaults shown for secrets: -h must never print a key from the file or env.
-	apiKey := fs.String("api-key", "", "anthropic: API key sent as x-api-key (env REVIEW_ASSIST_API_KEY)")
-	fs.BoolVar(&cfg.anthropic.Think, "think", cfg.anthropic.Think, "anthropic: let the model use extended thinking (slower)")
-	fs.StringVar(&cfg.anthropic.LogPath, "log", cfg.anthropic.LogPath, "anthropic: append one line per model call to this file (env REVIEW_ASSIST_LOG)")
-	fs.StringVar(&cfg.claude.Effort, "effort", cfg.claude.Effort, "claude-code: low, medium, high, xhigh or max")
+	apiKey := fs.String("api-key", "", "messages-api: API key sent as x-api-key (env REVIEW_ASSIST_API_KEY)")
+	fs.StringVar(&cfg.messages.LogPath, "log", cfg.messages.LogPath, "messages-api: append one line per model call to this file (env REVIEW_ASSIST_LOG)")
 	fs.IntVar(&cfg.concurrency, "concurrency", cfg.concurrency, "max agents running at once")
 	fs.IntVar(&cfg.maxTurns, "max-turns", cfg.maxTurns, "max model turns per agent (min 4)")
 	fs.Usage = func() {
@@ -175,23 +174,29 @@ flags:
 		return cfg, err
 	}
 	if *apiKey != "" {
-		cfg.anthropic.APIKey = *apiKey
+		cfg.messages.APIKey = *apiKey
 	}
-	cfg.anthropic.BaseURL = normaliseBaseURL(cfg.anthropic.BaseURL)
+	cfg.messages.BaseURL = normaliseBaseURL(cfg.messages.BaseURL)
 	switch cfg.backend {
-	case backendAnthropic:
-		if model != "" {
-			cfg.anthropic.Model = model
-		}
+	case backendMessagesAPI:
+		setIf(&cfg.messages.Model, nonEmpty(model))
+		setIf(&cfg.messages.Effort, nonEmpty(review.Effort(effort)))
 	case backendClaudeCode:
-		if model != "" {
-			cfg.claude.Model = model
-		}
+		setIf(&cfg.claude.Model, nonEmpty(model))
+		setIf(&cfg.claude.Effort, nonEmpty(review.Effort(effort)))
 		if cfg.claude.Token == "" {
 			return cfg, fmt.Errorf("the claude-code backend needs a token: run `claude setup-token` and put it in claude_code.token in %s", configFile)
 		}
+		if cfg.claude.Effort == review.EffortNone {
+			return cfg, errors.New("the claude-code backend has no effort none: use low, medium, high, xhigh or max")
+		}
 	default:
-		return cfg, fmt.Errorf("unknown backend %q: use %s or %s", cfg.backend, backendAnthropic, backendClaudeCode)
+		return cfg, fmt.Errorf("unknown backend %q: use %s or %s", cfg.backend, backendMessagesAPI, backendClaudeCode)
+	}
+	for _, e := range []review.Effort{cfg.messages.Effort, cfg.claude.Effort} {
+		if !e.Valid() {
+			return cfg, fmt.Errorf("unknown effort %q: use none, low, medium, high, xhigh or max", e)
+		}
 	}
 	switch {
 	case fs.NArg() > 1:
@@ -228,6 +233,14 @@ func resolveTarget(ctx context.Context, runner github.Runner, target string) (re
 		return pr.Repo{}, 0, false, err
 	}
 	return repo, n, localErr == nil && local == repo, nil
+}
+
+func nonEmpty[T comparable](v T) *T {
+	var zero T
+	if v == zero {
+		return nil
+	}
+	return &v
 }
 
 func firstSet(vals ...string) string {
