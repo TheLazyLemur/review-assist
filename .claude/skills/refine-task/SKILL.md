@@ -58,7 +58,7 @@ lives only in someone's head is not done.
    dependency state into one place:
 
    ```sh
-   .claude/skills/tracker/scripts/tracker.py ready 7
+   ./tracker ready 7
    ```
 
    It flags criteria with a vague word, criteria joining two things with "and",
@@ -87,7 +87,7 @@ lives only in someone's head is not done.
    the new body with:
 
    ```sh
-   .claude/skills/tracker/scripts/tracker.py issue.update 7 --body-file body.md
+   ./tracker issue.update 7 --body-file body.md
    ```
 
    Check the dependencies against what the task actually needs. If an edge is
@@ -103,7 +103,7 @@ lives only in someone's head is not done.
    dependencies are outstanding:
 
    ```sh
-   .claude/skills/tracker/scripts/tracker.py issue.update 7 --status ready
+   ./tracker issue.update 7 --status ready
    ```
 
 ## Refining a whole slice

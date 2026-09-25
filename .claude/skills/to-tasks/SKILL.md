@@ -43,7 +43,7 @@ caller remains, depending on every batch.
    rather than taking it on trust.
 
    ```sh
-   .claude/skills/tracker/scripts/tracker.py issue.get 20
+   ./tracker issue.get 20
    ```
 
 2. **Draft the tasks.** Each is one unit of work, finishable without holding the
@@ -71,10 +71,9 @@ caller remains, depending on every batch.
    `--depends-on` names a task that already exists. Capture each number:
 
    ```sh
-   t=.claude/skills/tracker/scripts/tracker.py
-   a=$($t task.create --slice 20 --title "Bitbucket CodeHost reads pull requests" \
+      a=$(./tracker task.create --slice 20 --title "Bitbucket CodeHost reads pull requests" \
      --what "..." --criterion "..." --criterion "...")
-   b=$($t task.create --slice 20 --title "Bitbucket CodeHost posts comments" \
+   b=$(./tracker task.create --slice 20 --title "Bitbucket CodeHost posts comments" \
      --what "..." --criterion "..." --depends-on "$a")
    ```
 
@@ -85,8 +84,8 @@ caller remains, depending on every batch.
    drifts the moment an edge changes.
 
    ```sh
-   $t slice.sync 20
-   $t validate
+   ./tracker slice.sync 20
+   ./tracker validate
    ```
 
    `slice.sync` rewrites the slice's Tasks section with the task list, what can

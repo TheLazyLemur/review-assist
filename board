@@ -1,3 +1,2 @@
 #!/bin/sh
-# gh finds the repo from the working directory, so run from the repo root.
-cd "$(dirname "$0")" && exec python3 .claude/skills/tracker/scripts/tracker.py board "$@"
+exec "$(dirname "$0")/tracker" board "$@"
