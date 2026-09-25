@@ -34,8 +34,8 @@ var readTools = []toolSpec{
 	{
 		Name: "get_diff",
 		Description: "Get the PR diff for one changed file (or all files if path is omitted). " +
-			"Each line is prefixed with its anchor: R<n> for lines on the head side (added '+' or context ' '), " +
-			"L<n> for removed '-' lines on the base side. Use these anchors for findings.",
+			"Each line is prefixed with its anchor: H<n> for lines on the head side (added '+' or context ' '), " +
+			"B<n> for removed '-' lines on the base side. Use these anchors for findings.",
 		Properties: map[string]any{
 			"path": map[string]any{"type": "string", "description": "changed file path; omit for the whole PR"},
 		},
@@ -87,8 +87,8 @@ var readTools = []toolSpec{
 
 var findingProps = map[string]any{
 	"path":              map[string]any{"type": "string", "description": "changed file path"},
-	"line":              map[string]any{"type": "integer", "description": "line number from the R<n>/L<n> anchor in get_diff"},
-	"side":              map[string]any{"type": "string", "enum": []string{"RIGHT", "LEFT"}, "description": "RIGHT for R<n> anchors, LEFT for L<n> anchors"},
+	"line":              map[string]any{"type": "integer", "description": "line number from the H<n>/B<n> anchor in get_diff"},
+	"side":              map[string]any{"type": "string", "enum": []string{"head", "base"}, "description": "head for H<n> anchors, base for B<n> anchors"},
 	"severity":          map[string]any{"type": "string", "enum": []string{"blocking", "major", "minor"}},
 	"confidence":        map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}},
 	"lens":              map[string]any{"type": "string"},
@@ -110,18 +110,18 @@ var submitTool = toolSpec{
 				"required":   []string{"path", "line", "side", "severity", "confidence", "title", "explanation", "suggested_comment"},
 			},
 		},
-		"verdict": map[string]any{"type": "string", "description": "verifier only: 2-3 line verdict on whether the PR is mergeable"},
+		"assessment": map[string]any{"type": "string", "description": "verifier only: 2-3 lines on whether the PR is ready to merge, and what blocks it if not"},
 	},
 	Required: []string{"findings"},
 }
 
 type submission struct {
-	Findings []Finding `json:"findings"`
-	Verdict  string    `json:"verdict"`
+	Findings   []Finding `json:"findings"`
+	Assessment string    `json:"assessment"`
 }
 
 // exec runs one read tool. Errors are returned as text for the model.
-func (w *Workspace) exec(ctx context.Context, name string, raw json.RawMessage) (string, error) {
+func (w *Subject) exec(ctx context.Context, name string, raw json.RawMessage) (string, error) {
 	var in struct {
 		Path       string `json:"path"`
 		Ref        string `json:"ref"`
@@ -156,7 +156,7 @@ func (w *Workspace) exec(ctx context.Context, name string, raw json.RawMessage) 
 	}
 }
 
-func (w *Workspace) listChanged() string {
+func (w *Subject) listChanged() string {
 	var b strings.Builder
 	for _, f := range w.Files {
 		status := "modified"
@@ -176,7 +176,7 @@ func (w *Workspace) listChanged() string {
 	return b.String()
 }
 
-// RenderAnnotated renders one file's diff with R<n>/L<n> anchors.
+// RenderAnnotated renders one file's diff with H<n>/B<n> anchors.
 func RenderAnnotated(f diff.File) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "=== %s\n", f.Path())
@@ -188,13 +188,13 @@ func RenderAnnotated(f diff.File) string {
 		for _, l := range h.Lines {
 			side, n := l.Target()
 			marker := map[diff.Kind]string{diff.Context: " ", diff.Add: "+", diff.Del: "-"}[l.Kind]
-			fmt.Fprintf(&b, "%s%-5d %s%s\n", side[:1], n, marker, l.Text)
+			fmt.Fprintf(&b, "%s%-5d %s%s\n", strings.ToUpper(string(side[:1])), n, marker, l.Text)
 		}
 	}
 	return b.String()
 }
 
-func (w *Workspace) renderDiff(path string) (string, error) {
+func (w *Subject) renderDiff(path string) (string, error) {
 	if path != "" {
 		f, ok := w.file(path)
 		if !ok {
@@ -209,7 +209,7 @@ func (w *Workspace) renderDiff(path string) (string, error) {
 	return truncate(b.String()), nil
 }
 
-func (w *Workspace) commit(ref string) (string, error) {
+func (w *Subject) commit(ref string) (string, error) {
 	switch ref {
 	case "", "head":
 		if !w.headOK {
@@ -238,7 +238,7 @@ func cleanPath(p string) (string, error) {
 	return p, nil
 }
 
-func (w *Workspace) readFile(ctx context.Context, path, ref string, start, end int) (string, error) {
+func (w *Subject) readFile(ctx context.Context, path, ref string, start, end int) (string, error) {
 	sha, err := w.commit(ref)
 	if err != nil {
 		return "", err
@@ -274,7 +274,7 @@ func (w *Workspace) readFile(ctx context.Context, path, ref string, start, end i
 	return truncate(b.String()), nil
 }
 
-func (w *Workspace) listDir(ctx context.Context, path, ref string) (string, error) {
+func (w *Subject) listDir(ctx context.Context, path, ref string) (string, error) {
 	sha, err := w.commit(ref)
 	if err != nil {
 		return "", err
@@ -290,7 +290,7 @@ func (w *Workspace) listDir(ctx context.Context, path, ref string) (string, erro
 	return truncate(strings.Join(names, "\n")), nil
 }
 
-func (w *Workspace) grep(ctx context.Context, pattern, ref, path string, ignoreCase bool) (string, error) {
+func (w *Subject) grep(ctx context.Context, pattern, ref, path string, ignoreCase bool) (string, error) {
 	sha, err := w.commit(ref)
 	if err != nil {
 		return "", err
@@ -315,7 +315,7 @@ func (w *Workspace) grep(ctx context.Context, pattern, ref, path string, ignoreC
 	return truncate(strings.Join(lines, "\n")), nil
 }
 
-func (w *Workspace) log(ctx context.Context, path string, limit int) (string, error) {
+func (w *Subject) log(ctx context.Context, path string, limit int) (string, error) {
 	sha, err := w.commit("head")
 	if err != nil {
 		return "", err

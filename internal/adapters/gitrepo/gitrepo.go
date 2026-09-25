@@ -168,7 +168,7 @@ func (r *Repo) remoteFor(ctx context.Context, repo pr.Repo) string {
 		}
 		u := strings.TrimSuffix(strings.TrimSuffix(f[1], "/"), ".git")
 		slug := repo.FullName()
-		if strings.Contains(u, repo.Host) && (strings.HasSuffix(u, "/"+slug) || strings.HasSuffix(u, ":"+slug)) {
+		if strings.Contains(u, repo.Hostname) && (strings.HasSuffix(u, "/"+slug) || strings.HasSuffix(u, ":"+slug)) {
 			return f[0]
 		}
 	}

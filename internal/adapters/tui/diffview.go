@@ -37,19 +37,19 @@ func (p *prModel) file() (diff.File, bool) {
 	return p.data.Files[p.fileIdx], true
 }
 
-// commentsAt groups this file's review comments by the anchor GitHub reports.
-func (p *prModel) commentsAt(path string) (map[string][]pr.ReviewComment, []pr.ReviewComment) {
-	byLine := map[string][]pr.ReviewComment{}
-	var fileLevel []pr.ReviewComment
-	for _, c := range p.data.ReviewComments {
-		if c.Path != path {
+// commentsAt groups this file's comments by line, plus those about the whole file.
+func (p *prModel) commentsAt(path string) (map[string][]pr.Comment, []pr.Comment) {
+	byLine := map[string][]pr.Comment{}
+	var fileLevel []pr.Comment
+	for _, c := range p.data.Comments {
+		if c.Anchor == nil || c.Anchor.Path != path {
 			continue
 		}
-		if c.FileLevel {
+		if c.Anchor.Line == 0 {
 			fileLevel = append(fileLevel, c)
 			continue
 		}
-		k := fmt.Sprintf("%s:%d", c.Side, c.Line)
+		k := fmt.Sprintf("%s:%d", c.Anchor.Side, c.Anchor.Line)
 		byLine[k] = append(byLine[k], c)
 	}
 	return byLine, fileLevel
@@ -117,12 +117,12 @@ func (m *Model) buildRows(width int) {
 	p.snapCursor(1)
 }
 
-func commentNote(c pr.ReviewComment, w int, kind string) string {
+func commentNote(c pr.Comment, w int, kind string) string {
 	who := authorStyle.Render("@" + c.Author)
 	if kind != "" {
 		who = faintStyle.Render("["+kind+"] ") + who
 	}
-	if c.InReplyToID != 0 {
+	if c.ReplyTo != 0 {
 		who = faintStyle.Render("↳ ") + who
 	}
 	return lipgloss.NewStyle().Foreground(orange).Render("  ┃ ") + fit(who+" "+commentStyle.Render(oneLine(c.Body)), w)
@@ -310,33 +310,35 @@ func (m *Model) lineComment() tea.Cmd {
 	if !ok {
 		return m.setStatus("move the cursor onto a diff line", true)
 	}
-	ic := pr.InlineComment{CommitSHA: p.data.PR.HeadSHA, Path: f.Path()}
+	a := &pr.Anchor{Path: f.Path()}
 	side, n := line.Target()
-	ic.Side, ic.Line = side, n
+	a.Side, a.Line = side, n
 	label := fmt.Sprintf("%s:%d (%s)", f.Path(), n, side)
 	quote := expandTabs(line.Text)
 	if p.selecting {
 		first, last := p.selection()
 		ss, sn := first.Target()
 		es, en := last.Target()
-		ic.Side, ic.Line = es, en
+		a.Side, a.Line = es, en
 		if !(ss == es && sn == en) {
-			ic.StartSide, ic.StartLine = ss, sn
+			a.StartSide, a.StartLine = ss, sn
 			label = fmt.Sprintf("%s:%d-%d", f.Path(), sn, en)
 			quote = expandTabs(first.Text) + "\n…\n" + expandTabs(last.Text)
 		}
 		p.selecting = false
 	}
-	return m.openInlineEditor(ic, label, quote, "")
+	return m.openAnchoredEditor(a, label, quote, "")
 }
 
-func (m *Model) openInlineEditor(ic pr.InlineComment, label, quote, initial string) tea.Cmd {
-	n := m.pr.number
-	ctx := faintStyle.Render(label) + "\n" + lipgloss.NewStyle().Foreground(midGrey).Render(quote)
-	e := newEditor("Inline comment", ctx, initial, true, func(body string) (string, func(context.Context) error) {
-		ic.Body = body
-		return "inline comment on " + label, func(c context.Context) error {
-			return m.deps.PRs.AddInlineComment(c, n, ic)
+func (m *Model) openAnchoredEditor(a *pr.Anchor, label, quote, initial string) tea.Cmd {
+	n, head := m.pr.number, m.pr.data.PR.HeadSHA
+	ctx := faintStyle.Render(label)
+	if quote != "" {
+		ctx += "\n" + lipgloss.NewStyle().Foreground(midGrey).Render(quote)
+	}
+	e := newEditor("Comment", ctx, initial, true, func(body string) (string, func(context.Context) error) {
+		return "comment on " + label, func(c context.Context) error {
+			return m.deps.PRs.PostComment(c, n, pr.NewComment{Body: body, Anchor: a, HeadSHA: head})
 		}
 	})
 	m.modal = e
@@ -349,17 +351,10 @@ func (m *Model) fileComment() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	n, sha, path := p.number, p.data.PR.HeadSHA, f.Path()
-	e := newEditor("File comment", faintStyle.Render(path), "", true, func(body string) (string, func(context.Context) error) {
-		return "file comment on " + path, func(c context.Context) error {
-			return m.deps.PRs.AddFileComment(c, n, sha, path, body)
-		}
-	})
-	m.modal = e
-	return e.focus()
+	return m.openAnchoredEditor(&pr.Anchor{Path: f.Path()}, f.Path()+" (whole file)", "", "")
 }
 
-func (m *Model) threadOnLine() []pr.ReviewComment {
+func (m *Model) threadOnLine() []pr.Comment {
 	p := m.pr
 	f, ok := p.file()
 	line, ok2 := p.cursorLine()
@@ -376,21 +371,17 @@ func (m *Model) replyOnLine() tea.Cmd {
 		return m.setStatus("no comment thread on this line", true)
 	}
 	last := thread[len(thread)-1]
-	root := last.ID
-	if last.InReplyToID != 0 {
-		root = last.InReplyToID
-	}
 	n := m.pr.number
 	ctx := authorStyle.Render("@"+last.Author) + " " + lipgloss.NewStyle().Foreground(midGrey).Render(fit(oneLine(last.Body), 90))
 	e := newEditor("Reply", ctx, "", true, func(body string) (string, func(context.Context) error) {
-		return "reply", func(c context.Context) error { return m.deps.PRs.Reply(c, n, root, body) }
+		return "reply", func(c context.Context) error { return m.deps.PRs.Reply(c, n, last, body) }
 	})
 	m.modal = e
 	return e.focus()
 }
 
 func (m *Model) deleteOnLine() tea.Cmd {
-	var mine []pr.ReviewComment
+	var mine []pr.Comment
 	for _, c := range m.threadOnLine() {
 		if m.viewer != "" && c.Author == m.viewer {
 			mine = append(mine, c)
@@ -399,12 +390,13 @@ func (m *Model) deleteOnLine() tea.Cmd {
 	if len(mine) == 0 {
 		return m.setStatus("none of your comments on this line", true)
 	}
+	n := m.pr.number
 	var items []menuItem
 	for i, c := range mine {
 		c := c
 		items = append(items, menuItem{fmt.Sprint(i + 1), fit(oneLine(c.Body), 60), func() tea.Cmd {
 			m.confirmAct("Delete this comment?\n\n"+fit(oneLine(c.Body), 60), "delete comment",
-				func(ctx context.Context) error { return m.deps.PRs.DeleteReviewComment(ctx, c.ID) })
+				func(ctx context.Context) error { return m.deps.PRs.DeleteComment(ctx, n, c) })
 			return nil
 		}})
 	}
@@ -448,7 +440,7 @@ func (p *prModel) isAt(f review.Finding) bool {
 		return false
 	}
 	s, n := line.Target()
-	return string(s) == f.Side && n == f.Line
+	return s == f.Side && n == f.Line
 }
 
 // gotoFinding opens the diff at the finding's line.
@@ -467,7 +459,7 @@ func (m *Model) gotoFinding(f review.Finding) {
 	for i, r := range p.rows {
 		if r.kind == rowLine {
 			s, n := r.line.Target()
-			if string(s) == f.Side && n == f.Line {
+			if s == f.Side && n == f.Line {
 				p.cursor = i
 				return
 			}
@@ -569,8 +561,10 @@ func (m *Model) sidebar(h int) string {
 		}
 	}
 	commentCount := map[string]int{}
-	for _, c := range p.data.ReviewComments {
-		commentCount[c.Path]++
+	for _, c := range p.data.Comments {
+		if c.Anchor != nil {
+			commentCount[c.Anchor.Path]++
+		}
 	}
 	start := max(p.fileIdx-(h-3)/2, 0)
 	for i := start; i < min(len(p.data.Files), start+h-1); i++ {

@@ -106,13 +106,13 @@ Vim style. Press `?` anywhere for the full list.
 
 - List: `j/k`, `gg/G`, `ctrl+d/u`, `enter` open, `/` filter, `s` open/closed/merged/all, `r` refresh, `o` browser.
 - PR: `1 2 3` or `tab` switch Overview / Diff / Agent. `a` approve, `x` request changes, `C` PR comment,
-  `m` every other action (review comment, merge / squash / rebase, close, reopen, ready / draft,
+  `m` every other action (merge / squash / rebase, close, reopen, ready / draft,
   checkout, delete my PR comment, browser), `A` agent review, `r` refresh, `q` back.
-- Diff: `j/k` lines, `]/[` files, `}/{` hunks, `h/l` scroll sideways, `c` inline comment,
+- Diff: `j/k` lines, `]/[` files, `}/{` hunks, `h/l` scroll sideways, `c` comment on the line,
   `v` then `c` comment on a line range, `F` file comment, `R` reply to the thread on the line,
   `D` delete my comment on the line, `t` hide comments, `f` hide file list, `n/N` next agent finding.
 - Your own PR: GitHub refuses approve and request changes from a PR's author.
-  On your own PR, `a` and `x` post a comment review instead, headed
+  On your own PR, `a` and `x` post a comment instead, headed
   `**Approved**` or `**Changes requested:**`. The editor says so before you post.
 - Editors: `alt+enter` submits (`ctrl+s` and `ctrl+enter` also work where your terminal passes them through; zellij takes `ctrl+s`), `esc` cancels (twice if you typed something). If a post fails, the editor stays open with your text and shows the reason.
 
@@ -170,18 +170,18 @@ cmd/review-assist/
   compose.go       composition root: flags/env, builds adapters, starts the TUI
 internal/core/                 domain core (imports no adapter)
   diff/            unified diff parser; maps each line to its comment anchor
-  pr/              PR types, Host port, Service (loads PRs, checks write rules)
-  review/          levels and lenses, Reviewer, read-only tools;
-                   ports: Agent, CodeSource/Code
+  pr/              PR types, CodeHost port, Service (loads PRs, checks write rules)
+  review/          levels and lenses, Service, read-only tools;
+                   ports: Backend, CodeSource/Code
 internal/adapters/
-  tui/             inbound: bubbletea screens calling pr.Service and review.Reviewer
-  github/          outbound pr.Host over the gh CLI (github.com and GHE)
+  tui/             inbound: bubbletea screens calling pr.Service and review.Service
+  github/          outbound pr.CodeHost over the gh CLI (github.com and GHE)
   anthropic/       outbound review.Agent: loops over the Anthropic Messages API
-  claudecode/      outbound review.Agent: the claude CLI in bare mode, via pi-claude
+  claudecode/      outbound review.Backend: the claude CLI in bare mode, via pi-claude
   gitrepo/         outbound review.CodeSource/Code over git (read commands only)
 ```
 
-The review core has no path to GitHub: `review.Reviewer` gets an `Agent` and a
+The review core has no path to GitHub: `review.Service` gets a `Backend` and a
 `CodeSource`, and neither can post. Each backend runs its own loop but may
 only call the tools the core hands it. Only the TUI calls `pr.Service` writes, and
 only after you submit or confirm.

@@ -39,7 +39,7 @@ type config struct {
 	target      string // optional PR argument
 }
 
-func (c config) agent(cacheDir string) (review.Agent, string, error) {
+func (c config) agent(cacheDir string) (review.Backend, string, error) {
 	switch c.backend {
 	case backendAnthropic:
 		return anthropic.New(c.anthropic), c.anthropic.Model, nil
@@ -94,14 +94,14 @@ func run(args []string) error {
 	}
 
 	prs := pr.NewService(github.NewClient(runner, repo), repo)
-	reviewer := review.NewReviewer(
+	reviews := review.NewService(
 		agent,
 		gitrepo.Source{Cwd: cwd, CacheDir: cache},
 		cfg.maxTurns, cfg.concurrency,
 	)
 	app := tui.New(tui.Deps{
 		PRs:       prs,
-		Reviewer:  reviewer,
+		Reviews:   reviews,
 		ModelName: modelName,
 		Cwd:       cwd,
 		LocalRepo: localRepo,

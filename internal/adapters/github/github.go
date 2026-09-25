@@ -1,4 +1,4 @@
-// Package github implements pr.Host with the GitHub CLI, for github.com and
+// Package github implements pr.CodeHost with the GitHub CLI, for github.com and
 // GitHub Enterprise hosts.
 package github
 
@@ -6,11 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/TheLazyLemur/review-assist/internal/core/diff"
@@ -68,7 +70,7 @@ func Detect(ctx context.Context, run Runner) (pr.Repo, error) {
 	if err != nil || u.Host == "" || v.Owner.Login == "" || v.Name == "" {
 		return pr.Repo{}, fmt.Errorf("gh repo view returned no host/owner/name: %s", out)
 	}
-	return pr.Repo{Host: u.Host, Owner: v.Owner.Login, Name: v.Name}, nil
+	return pr.Repo{Platform: pr.GitHub, Hostname: u.Host, Owner: v.Owner.Login, Name: v.Name}, nil
 }
 
 // Client is a pr.Host for one repository.
@@ -77,7 +79,7 @@ type Client struct {
 	repo pr.Repo
 }
 
-var _ pr.Host = (*Client)(nil)
+var _ pr.CodeHost = (*Client)(nil)
 
 func NewClient(run Runner, repo pr.Repo) *Client { return &Client{run: run, repo: repo} }
 
@@ -214,7 +216,10 @@ func (c *Client) Get(ctx context.Context, number int) (*pr.PR, error) {
 		Mergeable: d.Mergeable, CreatedAt: d.CreatedAt,
 	}
 	for _, r := range d.Reviews {
-		p.Reviews = append(p.Reviews, pr.Review{Author: r.Author.Login, Body: r.Body, State: r.State, SubmittedAt: r.SubmittedAt})
+		// Other states (commented, dismissed, pending) carry no verdict.
+		if dec, ok := decisions[r.State]; ok {
+			p.Verdicts = append(p.Verdicts, pr.Verdict{Author: r.Author.Login, Decision: dec, Message: r.Body, At: r.SubmittedAt})
+		}
 	}
 	for _, ch := range d.Checks {
 		p.Checks = append(p.Checks, ch.toDomain())
@@ -227,39 +232,77 @@ func (c *Client) Diff(ctx context.Context, number int) (string, error) {
 	return string(out), err
 }
 
-// ReviewComments lists inline and file-level comments. Outdated line comments
-// (no current line) are skipped.
-func (c *Client) ReviewComments(ctx context.Context, number int) ([]pr.ReviewComment, error) {
-	dtos, err := paginate[reviewCommentDTO](ctx, c, c.pullsPath(number)+"/comments")
-	if err != nil {
+var decisions = map[string]pr.Decision{"APPROVED": pr.Approve, "CHANGES_REQUESTED": pr.RequestChanges}
+
+// GitHub spells the sides of a diff LEFT and RIGHT.
+var (
+	sideToWire   = map[diff.Side]string{diff.Base: "LEFT", diff.Head: "RIGHT"}
+	sideFromWire = map[string]diff.Side{"LEFT": diff.Base, "RIGHT": diff.Head, "": diff.Head}
+)
+
+type reviewDTO struct {
+	User        author    `json:"user"`
+	Body        string    `json:"body"`
+	State       string    `json:"state"`
+	SubmittedAt time.Time `json:"submitted_at"`
+}
+
+// Comments merges GitHub's three kinds: comments on code, comments on the
+// pull request, and the summaries of "comment" reviews. Outdated comments on
+// code (no current line) are skipped.
+func (c *Client) Comments(ctx context.Context, number int) ([]pr.Comment, error) {
+	var (
+		onCode    []reviewCommentDTO
+		onPR      []issueCommentDTO
+		summaries []reviewDTO
+		errs      [3]error
+		wg        sync.WaitGroup
+	)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		onCode, errs[0] = paginate[reviewCommentDTO](ctx, c, c.pullsPath(number)+"/comments")
+	}()
+	go func() {
+		defer wg.Done()
+		onPR, errs[1] = paginate[issueCommentDTO](ctx, c, fmt.Sprintf("repos/%s/issues/%d/comments", c.repo.FullName(), number))
+	}()
+	go func() {
+		defer wg.Done()
+		summaries, errs[2] = paginate[reviewDTO](ctx, c, c.pullsPath(number)+"/reviews")
+	}()
+	wg.Wait()
+	if err := errors.Join(errs[:]...); err != nil {
 		return nil, err
 	}
-	var out []pr.ReviewComment
-	for _, d := range dtos {
+
+	var out []pr.Comment
+	for _, d := range onCode {
 		fileLevel := d.SubjectType == "file"
 		if !fileLevel && d.Line <= 0 {
 			continue
 		}
-		side := diff.Side(d.Side)
-		if side == "" {
-			side = diff.Right
+		a := &pr.Anchor{Path: d.Path}
+		if !fileLevel {
+			side, ok := sideFromWire[d.Side]
+			if !ok {
+				return nil, fmt.Errorf("comment %d: unknown side %q", d.ID, d.Side)
+			}
+			a.Line, a.Side = d.Line, side
+			if d.StartLine > 0 && d.StartLine != d.Line {
+				a.StartLine, a.StartSide = d.StartLine, side
+			}
 		}
-		out = append(out, pr.ReviewComment{
-			ID: d.ID, FileLevel: fileLevel, InReplyToID: d.InReplyToID, Path: d.Path, Line: d.Line,
-			StartLine: d.StartLine, Side: side, Body: d.Body, Author: d.User.Login, CreatedAt: d.CreatedAt,
-		})
+		out = append(out, pr.Comment{ID: d.ID, ReplyTo: d.InReplyToID, Author: d.User.Login, Body: d.Body, CreatedAt: d.CreatedAt, Anchor: a})
 	}
-	return out, nil
-}
-
-func (c *Client) IssueComments(ctx context.Context, number int) ([]pr.IssueComment, error) {
-	dtos, err := paginate[issueCommentDTO](ctx, c, fmt.Sprintf("repos/%s/issues/%d/comments", c.repo.FullName(), number))
-	if err != nil {
-		return nil, err
+	for _, d := range onPR {
+		out = append(out, pr.Comment{ID: d.ID, Author: d.User.Login, Body: d.Body, CreatedAt: d.CreatedAt})
 	}
-	out := make([]pr.IssueComment, 0, len(dtos))
-	for _, d := range dtos {
-		out = append(out, pr.IssueComment{ID: d.ID, Author: d.User.Login, Body: d.Body, CreatedAt: d.CreatedAt})
+	for _, r := range summaries {
+		if r.State == "COMMENTED" && strings.TrimSpace(r.Body) != "" {
+			// ID 0: GitHub cannot delete a review summary on its own.
+			out = append(out, pr.Comment{Author: r.User.Login, Body: r.Body, CreatedAt: r.SubmittedAt})
+		}
 	}
 	return out, nil
 }
@@ -288,50 +331,54 @@ func (c *Client) Viewer(ctx context.Context) (string, error) {
 
 // ---- writes ----
 
-var reviewFlags = map[pr.ReviewEvent]string{
-	pr.Approve:        "--approve",
-	pr.RequestChanges: "--request-changes",
-	pr.CommentReview:  "--comment",
-}
+var verdictFlags = map[pr.Decision]string{pr.Approve: "--approve", pr.RequestChanges: "--request-changes"}
 
-func (c *Client) SubmitReview(ctx context.Context, number int, event pr.ReviewEvent, body string) error {
-	flag, ok := reviewFlags[event]
+func (c *Client) SubmitVerdict(ctx context.Context, number int, decision pr.Decision, message string) error {
+	flag, ok := verdictFlags[decision]
 	if !ok {
-		return fmt.Errorf("unknown review event %q", event)
+		return fmt.Errorf("unknown decision %q", decision)
 	}
-	_, err := c.gh(ctx, []byte(body), "pr", "review", strconv.Itoa(number), flag, "--body-file", "-")
+	_, err := c.gh(ctx, []byte(message), "pr", "review", strconv.Itoa(number), flag, "--body-file", "-")
 	return err
 }
 
-func (c *Client) Comment(ctx context.Context, number int, body string) error {
-	_, err := c.gh(ctx, []byte(body), "pr", "comment", strconv.Itoa(number), "--body-file", "-")
-	return err
-}
-
-func (c *Client) AddInlineComment(ctx context.Context, number int, ic pr.InlineComment) error {
-	payload := map[string]any{"body": ic.Body, "commit_id": ic.CommitSHA, "path": ic.Path, "line": ic.Line, "side": string(ic.Side)}
-	if ic.StartLine != 0 {
-		payload["start_line"], payload["start_side"] = ic.StartLine, string(ic.StartSide)
+func (c *Client) PostComment(ctx context.Context, number int, nc pr.NewComment) error {
+	a := nc.Anchor
+	if a == nil {
+		_, err := c.gh(ctx, []byte(nc.Body), "pr", "comment", strconv.Itoa(number), "--body-file", "-")
+		return err
+	}
+	payload := map[string]any{"body": nc.Body, "commit_id": nc.HeadSHA, "path": a.Path}
+	if a.Line == 0 {
+		payload["subject_type"] = "file"
+	} else {
+		payload["line"], payload["side"] = a.Line, sideToWire[a.Side]
+		if a.StartLine != 0 {
+			payload["start_line"], payload["start_side"] = a.StartLine, sideToWire[a.StartSide]
+		}
 	}
 	return c.postJSON(ctx, c.pullsPath(number)+"/comments", payload)
 }
 
-func (c *Client) AddFileComment(ctx context.Context, number int, commitSHA, path, body string) error {
-	return c.postJSON(ctx, c.pullsPath(number)+"/comments",
-		map[string]any{"body": body, "commit_id": commitSHA, "path": path, "subject_type": "file"})
+// Reply threads under a comment on code; GitHub has no threads for comments
+// on the pull request itself.
+func (c *Client) Reply(ctx context.Context, number int, parent pr.Comment, body string) error {
+	if parent.Anchor == nil {
+		return errors.New("GitHub threads replies only under comments on code")
+	}
+	root := parent.ID
+	if parent.ReplyTo != 0 {
+		root = parent.ReplyTo
+	}
+	return c.postJSON(ctx, fmt.Sprintf("%s/comments/%d/replies", c.pullsPath(number), root), map[string]any{"body": body})
 }
 
-func (c *Client) Reply(ctx context.Context, number int, commentID int64, body string) error {
-	return c.postJSON(ctx, fmt.Sprintf("%s/comments/%d/replies", c.pullsPath(number), commentID), map[string]any{"body": body})
-}
-
-func (c *Client) DeleteReviewComment(ctx context.Context, id int64) error {
-	_, err := c.gh(ctx, nil, "api", "--method", "DELETE", fmt.Sprintf("repos/%s/pulls/comments/%d", c.repo.FullName(), id))
-	return err
-}
-
-func (c *Client) DeleteIssueComment(ctx context.Context, id int64) error {
-	_, err := c.gh(ctx, nil, "api", "--method", "DELETE", fmt.Sprintf("repos/%s/issues/comments/%d", c.repo.FullName(), id))
+func (c *Client) DeleteComment(ctx context.Context, _ int, cm pr.Comment) error {
+	kind := "issues"
+	if cm.Anchor != nil {
+		kind = "pulls"
+	}
+	_, err := c.gh(ctx, nil, "api", "--method", "DELETE", fmt.Sprintf("repos/%s/%s/comments/%d", c.repo.FullName(), kind, cm.ID))
 	return err
 }
 
@@ -395,7 +442,7 @@ func (c *Client) gh(ctx context.Context, stdin []byte, args ...string) ([]byte, 
 	case "pr":
 		args = append(args, "--repo", c.repo.Qualified())
 	case "api":
-		args = append([]string{"api", "--hostname", c.repo.Host}, args[1:]...)
+		args = append([]string{"api", "--hostname", c.repo.Hostname}, args[1:]...)
 	}
 	return c.run.Run(ctx, stdin, "gh", args...)
 }

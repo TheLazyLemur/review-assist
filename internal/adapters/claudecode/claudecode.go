@@ -31,7 +31,7 @@ type Config struct {
 
 type Agent struct{ cfg Config }
 
-var _ review.Agent = (*Agent)(nil)
+var _ review.Backend = (*Agent)(nil)
 
 func New(cfg Config) *Agent {
 	if cfg.Token == "" || cfg.WorkDir == "" {

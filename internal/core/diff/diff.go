@@ -1,6 +1,5 @@
-// Package diff parses unified diffs (as produced by `gh pr diff`) into files,
-// hunks and lines that know which side and line number GitHub uses for
-// inline review comments.
+// Package diff parses unified diffs into files, hunks and lines that know
+// which side and line number a comment anchors to.
 package diff
 
 import (
@@ -12,8 +11,8 @@ import (
 type Side string
 
 const (
-	Left  Side = "LEFT"  // the base version: removed lines
-	Right Side = "RIGHT" // the head version: added and context lines
+	Base Side = "base" // removed lines
+	Head Side = "head" // added and context lines
 )
 
 type Kind int
@@ -31,12 +30,12 @@ type Line struct {
 	NewNo int    // 0 when the line does not exist on the head side
 }
 
-// Target is where GitHub anchors an inline comment on this line.
+// Target is where a comment on this line anchors.
 func (l Line) Target() (Side, int) {
 	if l.Kind == Del {
-		return Left, l.OldNo
+		return Base, l.OldNo
 	}
-	return Right, l.NewNo
+	return Head, l.NewNo
 }
 
 type Hunk struct {

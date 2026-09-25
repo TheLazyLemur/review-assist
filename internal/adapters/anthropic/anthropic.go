@@ -31,7 +31,7 @@ type Agent struct {
 	client sdk.Client
 }
 
-var _ review.Agent = (*Agent)(nil)
+var _ review.Backend = (*Agent)(nil)
 
 func New(cfg Config) *Agent {
 	if cfg.BaseURL == "" || cfg.APIKey == "" || cfg.Model == "" {

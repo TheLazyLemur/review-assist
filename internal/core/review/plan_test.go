@@ -17,16 +17,16 @@ func TestMaxLevelPlanCoversEveryFileWithCorrectnessWithinBudget(t *testing.T) {
 
 	// when
 	// ... the max review level is planned
-	units := review.Plan(review.LevelMax, files, true)
+	assignments := review.Plan(review.LevelMax, files, true)
 
 	// then
 	// ... every file is reviewed for correctness exactly once
 	l1 := map[string]int{}
 	seen := map[string]bool{}
-	for _, u := range units {
+	for _, u := range assignments {
 		key := string(u.Lens.ID) + ":" + u.Scope()
 		if seen[key] {
-			t.Errorf("two units own %s", key)
+			t.Errorf("two assignments own %s", key)
 		}
 		seen[key] = true
 		if u.Lens.ID == review.L1 {
@@ -42,10 +42,10 @@ func TestMaxLevelPlanCoversEveryFileWithCorrectnessWithinBudget(t *testing.T) {
 	}
 
 	// ... the specialist budget holds and the rules lens is included
-	if len(units) > review.LevelMax.Budget() {
-		t.Errorf("planned %d units, budget is %d", len(units), review.LevelMax.Budget())
+	if len(assignments) > review.LevelMax.Budget() {
+		t.Errorf("planned %d assignments, budget is %d", len(assignments), review.LevelMax.Budget())
 	}
-	if !hasLens(units, review.L9) {
+	if !hasLens(assignments, review.L9) {
 		t.Error("rules lens missing although a rules file governs the change")
 	}
 }
@@ -57,17 +57,17 @@ func TestQuickLevelPlansASingleCorrectnessPass(t *testing.T) {
 
 	// when
 	// ... the quick level is planned
-	units := review.Plan(review.LevelQuick, files, true)
+	assignments := review.Plan(review.LevelQuick, files, true)
 
 	// then
 	// ... one correctness agent owns every file
-	if len(units) != 1 || units[0].Lens.ID != review.L1 || len(units[0].Files) != 3 {
-		t.Fatalf("want one L1 unit over 3 files, got %+v", units)
+	if len(assignments) != 1 || assignments[0].Lens.ID != review.L1 || len(assignments[0].Files) != 3 {
+		t.Fatalf("want one L1 unit over 3 files, got %+v", assignments)
 	}
 }
 
-func hasLens(units []review.Unit, id review.LensID) bool {
-	for _, u := range units {
+func hasLens(assignments []review.Assignment, id review.LensID) bool {
+	for _, u := range assignments {
 		if u.Lens.ID == id {
 			return true
 		}

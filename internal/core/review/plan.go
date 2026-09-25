@@ -56,15 +56,15 @@ func (l Level) Agents(files []diff.File, hasRules bool) int {
 	return n
 }
 
-// Unit is one specialist's job: one lens over one scope.
-type Unit struct {
+// Assignment is one specialist's job: one lens over one scope.
+type Assignment struct {
 	Lens  Lens
 	Files []string
 }
 
-func (u Unit) Scope() string { return strings.Join(u.Files, ",") }
+func (u Assignment) Scope() string { return strings.Join(u.Files, ",") }
 
-func (u Unit) Name() string {
+func (u Assignment) Name() string {
 	return fmt.Sprintf("%s %s · %s", u.Lens.ID, u.Lens.Name, scopeLabel(u.Files))
 }
 
@@ -79,19 +79,19 @@ func scopeLabel(files []string) string {
 	}
 }
 
-// Plan decomposes a review into (scope × lens) units. Correctness (L1) covers
+// Plan decomposes a review into (scope × lens) assignments. Correctness (L1) covers
 // every file exactly once; other lenses run over the whole PR, and L9 is added
 // when a rules file governs the repo. The level's budget caps the total.
-func Plan(level Level, files []diff.File, hasRules bool) []Unit {
+func Plan(level Level, files []diff.File, hasRules bool) []Assignment {
 	s := level.spec()
 	all := make([]string, 0, len(files))
 	for _, f := range files {
 		all = append(all, f.Path())
 	}
 
-	var units []Unit
+	var assignments []Assignment
 	for _, scope := range partition(files, s.l1Scopes) {
-		units = append(units, Unit{Lens: lenses[L1], Files: scope})
+		assignments = append(assignments, Assignment{Lens: lenses[L1], Files: scope})
 	}
 
 	extra := s.wholePR
@@ -100,12 +100,12 @@ func Plan(level Level, files []diff.File, hasRules bool) []Unit {
 		extra = append([]LensID{L9}, extra...)
 	}
 	for _, id := range extra {
-		if len(units) >= s.budget {
+		if len(assignments) >= s.budget {
 			break
 		}
-		units = append(units, Unit{Lens: lenses[id], Files: all})
+		assignments = append(assignments, Assignment{Lens: lenses[id], Files: all})
 	}
-	return units
+	return assignments
 }
 
 // partition splits files into at most k scopes balanced by changed lines,

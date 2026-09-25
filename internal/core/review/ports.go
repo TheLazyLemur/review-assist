@@ -7,9 +7,9 @@ import (
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 )
 
-// Agent runs a whole task, so a backend may loop itself (a CLI agent) or
+// Backend runs a whole task, so a backend may loop itself (a CLI agent) or
 // be looped by its adapter (a Messages API). It must offer only task.Tools.
-type Agent interface {
+type Backend interface {
 	// Run returns nil when the backend stops without finishing; callers
 	// check task.Done.
 	Run(ctx context.Context, task Task) error

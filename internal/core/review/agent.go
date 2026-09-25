@@ -27,7 +27,7 @@ type Event struct {
 var errNoSubmission = errors.New("agent finished without calling submit_findings")
 
 // The agent gets the read tools and submit_findings, nothing else.
-func (r *Reviewer) runAgent(ctx context.Context, ws *Workspace, name, system, prompt string, emit func(Event)) (submission, error) {
+func (r *Service) runAgent(ctx context.Context, subject *Subject, name, system, prompt string, emit func(Event)) (submission, error) {
 	var (
 		mu        sync.Mutex
 		sub       submission
@@ -39,7 +39,7 @@ func (r *Reviewer) runAgent(ctx context.Context, ws *Workspace, name, system, pr
 			Name: spec.Name, Description: spec.Description, Properties: spec.Properties, Required: spec.Required,
 			Call: func(ctx context.Context, input json.RawMessage) (string, error) {
 				emit(Event{Agent: name, Kind: EventTool, Detail: toolSummary(spec.Name, input)})
-				return ws.exec(ctx, spec.Name, input)
+				return subject.exec(ctx, spec.Name, input)
 			},
 		})
 	}
@@ -60,7 +60,7 @@ func (r *Reviewer) runAgent(ctx context.Context, ws *Workspace, name, system, pr
 		},
 	})
 
-	err := r.agent.Run(ctx, Task{
+	err := r.backend.Run(ctx, Task{
 		Name: name, System: system, Prompt: prompt, Tools: tools, MaxTurns: r.maxTurns,
 		FinishTool: submitTool.Name,
 		Done: func() bool {

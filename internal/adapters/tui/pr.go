@@ -157,40 +157,30 @@ func (m *Model) requestChanges() tea.Cmd {
 	return m.verdictEditor(pr.RequestChanges, fmt.Sprintf("Request changes on #%d", m.pr.number), "Explain what needs to change.", true)
 }
 
-// verdictEditor opens the editor for approve or request changes. On the
-// viewer's own PR the host refuses both, so it says the review posts as a
-// comment review, and pr.ReviewFor converts it.
-func (m *Model) verdictEditor(event pr.ReviewEvent, title, hint string, required bool) tea.Cmd {
-	n, author, viewer := m.pr.number, m.pr.data.PR.Author, m.viewer
-	if own, _ := pr.ReviewFor(author, viewer, event, ""); own != event {
-		hint += "\nThis is your PR, so it posts as a comment review headed with the verdict."
+// verdictEditor warns up front when the verdict will post as a comment: the
+// code host refuses a verdict on the viewer's own pull request.
+func (m *Model) verdictEditor(decision pr.Decision, title, hint string, required bool) tea.Cmd {
+	p, viewer := m.pr.data.PR, m.viewer
+	if pr.IsOwn(p.Author, viewer) {
+		hint += "\nThis is your PR, so it posts as a comment headed with the verdict."
 	}
 	what := strings.ToLower(title[:1]) + title[1:]
-	e := newEditor(title, hint, "", required, func(body string) (string, func(context.Context) error) {
-		event, body := pr.ReviewFor(author, viewer, event, body)
-		return what, func(ctx context.Context) error { return m.deps.PRs.SubmitReview(ctx, n, event, body) }
+	e := newEditor(title, hint, "", required, func(message string) (string, func(context.Context) error) {
+		return what, func(ctx context.Context) error {
+			_, err := m.deps.PRs.SubmitVerdict(ctx, p, viewer, decision, message)
+			return err
+		}
 	})
 	m.modal = e
 	return e.focus()
 }
 
-func (m *Model) commentReview() tea.Cmd {
-	n := m.pr.number
-	m.modal = newEditor(fmt.Sprintf("Review comment on #%d", n), "Submitted as a review (neither approve nor request changes).", "", true,
-		func(body string) (string, func(context.Context) error) {
-			return fmt.Sprintf("submit review on #%d", n), func(ctx context.Context) error {
-				return m.deps.PRs.SubmitReview(ctx, n, pr.CommentReview, body)
-			}
-		})
-	return m.modal.(*editorModal).focus()
-}
-
 func (m *Model) prComment() tea.Cmd {
 	n := m.pr.number
-	m.modal = newEditor(fmt.Sprintf("Comment on #%d", n), "PR-level comment (conversation tab). Markdown supported.", "", true,
+	m.modal = newEditor(fmt.Sprintf("Comment on #%d", n), "A comment on the whole pull request. Markdown supported.", "", true,
 		func(body string) (string, func(context.Context) error) {
 			return fmt.Sprintf("comment on #%d", n), func(ctx context.Context) error {
-				return m.deps.PRs.Comment(ctx, n, body)
+				return m.deps.PRs.PostComment(ctx, n, pr.NewComment{Body: body})
 			}
 		})
 	return m.modal.(*editorModal).focus()
@@ -208,7 +198,6 @@ func (m *Model) actionsMenu() *menuModal {
 	items := []menuItem{
 		{"a", "Approve", m.approve},
 		{"x", "Request changes", m.requestChanges},
-		{"v", "Submit review comment", m.commentReview},
 		{"C", "Add PR comment", m.prComment},
 	}
 	if info.State == "OPEN" {
@@ -252,9 +241,9 @@ func (m *Model) actionsMenu() *menuModal {
 			return nil
 		}})
 	}
-	if mine := m.myIssueComments(); len(mine) > 0 {
+	if mine := m.myPRComments(); len(mine) > 0 {
 		items = append(items, menuItem{"d", "Delete one of my PR comments", func() tea.Cmd {
-			m.modal = m.deleteIssueCommentMenu(mine)
+			m.modal = m.deletePRCommentMenu(mine)
 			return nil
 		}})
 	}
@@ -268,27 +257,28 @@ func (m *Model) actionsMenu() *menuModal {
 	return &menuModal{title: fmt.Sprintf("Actions for #%d", n), items: items}
 }
 
-func (m *Model) myIssueComments() []pr.IssueComment {
-	var mine []pr.IssueComment
-	for _, c := range m.pr.data.IssueComments {
-		if m.viewer != "" && c.Author == m.viewer {
+// myPRComments lists the viewer's deletable comments on the whole pull request.
+func (m *Model) myPRComments() []pr.Comment {
+	var mine []pr.Comment
+	for _, c := range m.pr.data.Comments {
+		if c.Anchor == nil && c.ID != 0 && m.viewer != "" && c.Author == m.viewer {
 			mine = append(mine, c)
 		}
 	}
 	return mine
 }
 
-func (m *Model) deleteIssueCommentMenu(mine []pr.IssueComment) *menuModal {
+func (m *Model) deletePRCommentMenu(mine []pr.Comment) *menuModal {
+	n := m.pr.number
 	var items []menuItem
 	for i, c := range mine {
-		c := c
 		key := ""
 		if i < 9 {
 			key = fmt.Sprint(i + 1)
 		}
 		items = append(items, menuItem{key, fit(oneLine(c.Body), 60), func() tea.Cmd {
 			m.confirmAct("Delete this comment?\n\n"+fit(oneLine(c.Body), 60), "delete comment",
-				func(ctx context.Context) error { return m.deps.PRs.DeleteIssueComment(ctx, c.ID) })
+				func(ctx context.Context) error { return m.deps.PRs.DeleteComment(ctx, n, c) })
 			return nil
 		}})
 	}
@@ -441,14 +431,17 @@ func overviewMarkdown(d *pr.Details) string {
 		text string
 	}
 	var entries []entry
-	for _, r := range info.Reviews {
-		if r.State == "COMMENTED" && strings.TrimSpace(r.Body) == "" {
-			continue // inline-only reviews show in the diff
-		}
-		text := fmt.Sprintf("### @%s — %s\n\n%s\n", r.Author, strings.ToLower(strings.ReplaceAll(r.State, "_", " ")), r.Body)
-		entries = append(entries, entry{r.SubmittedAt.Format("2006-01-02 15:04"), text})
+	verdictWords := map[pr.Decision]string{pr.Approve: "approved", pr.RequestChanges: "changes requested"}
+	for _, v := range info.Verdicts {
+		text := fmt.Sprintf("### @%s — %s\n\n%s\n", v.Author, verdictWords[v.Decision], v.Message)
+		entries = append(entries, entry{v.At.Format("2006-01-02 15:04"), text})
 	}
-	for _, c := range d.IssueComments {
+	onCode := 0
+	for _, c := range d.Comments {
+		if c.Anchor != nil {
+			onCode++
+			continue
+		}
 		text := fmt.Sprintf("### @%s commented\n\n%s\n", c.Author, c.Body)
 		entries = append(entries, entry{c.CreatedAt.Format("2006-01-02 15:04"), text})
 	}
@@ -459,7 +452,6 @@ func overviewMarkdown(d *pr.Details) string {
 			b.WriteString(e.text + "\n_" + e.at + "_\n\n")
 		}
 	}
-	inline := len(d.ReviewComments)
-	fmt.Fprintf(&b, "---\n\n%d inline comment(s) — press `2` for the diff.\n", inline)
+	fmt.Fprintf(&b, "---\n\n%d comment(s) on code — press `2` for the diff.\n", onCode)
 	return b.String()
 }
