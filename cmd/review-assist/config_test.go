@@ -8,10 +8,13 @@ import (
 
 func TestSettingsApplyFileThenEnvThenFlags(t *testing.T) {
 	// given
-	// ... a config file setting model, base URL, key and concurrency
+	// ... a config file choosing Claude Code, with a token, plus Anthropic settings and concurrency
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	file := `{"model": {"base_url": "http://file:1", "api_key": "file-key", "name": "file-model"}, "review": {"concurrency": 2}}`
+	file := `{"backend": "claude-code",
+		"claude_code": {"token": "file-token", "model": "file-model"},
+		"anthropic": {"base_url": "http://file:1", "api_key": "file-key"},
+		"review": {"concurrency": 2}}`
 	if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -27,15 +30,33 @@ func TestSettingsApplyFileThenEnvThenFlags(t *testing.T) {
 	cfg, err := parseConfig([]string{"-model", "flag-model"}, func(k string) string { return env[k] }, path)
 
 	// then
-	// ... the last source wins for each setting, and untouched settings keep the file value
+	// ... the last source wins for each setting, -model applies to the chosen backend, and untouched settings keep the file value
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertEqual(t, "flag-model", cfg.model.Model)
-	assertEqual(t, "http://env:2", cfg.model.BaseURL)
-	assertEqual(t, "file-key", cfg.model.APIKey)
+	assertEqual(t, "claude-code", cfg.backend)
+	assertEqual(t, "flag-model", cfg.claude.Model)
+	assertEqual(t, "file-token", cfg.claude.Token)
+	assertEqual(t, "http://env:2", cfg.anthropic.BaseURL)
+	assertEqual(t, "file-key", cfg.anthropic.APIKey)
 	assertEqual(t, 2, cfg.concurrency)
 	assertEqual(t, 40, cfg.maxTurns)
+}
+
+func TestClaudeCodeBackendNeedsASetupToken(t *testing.T) {
+	// given
+	// ... no config file and no token anywhere
+	noEnv := func(string) string { return "" }
+
+	// when
+	// ... the Claude Code backend is chosen by flag
+	_, err := parseConfig([]string{"-backend", "claude-code"}, noEnv, filepath.Join(t.TempDir(), "none.json"))
+
+	// then
+	// ... it refuses to start rather than fall back to another login
+	if err == nil {
+		t.Fatal("want an error for a missing claude_code.token")
+	}
 }
 
 func TestConfigPathUsesDotConfigOnMacAndLinux(t *testing.T) {

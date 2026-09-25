@@ -1,7 +1,8 @@
 # review-assist
 
 A terminal UI for reviewing GitHub pull requests, with optional AI review
-agents on any Anthropic-compatible endpoint (Ollama, Anthropic, a proxy). The agents only suggest. They cannot post.
+agents. Agents run on any Anthropic-compatible endpoint (Ollama, Anthropic, a
+proxy) or on Claude Code. The agents only suggest. They cannot post.
 
 Built with bubbletea, lipgloss and glamour (the renderer glow uses). It talks
 to GitHub through `gh`, so github.com and GitHub Enterprise both work with
@@ -27,11 +28,17 @@ file.
 
 | config file key | env | flag | default |
 |---|---|---|---|
-| `model.name` | `REVIEW_ASSIST_MODEL` | `-model` | `deepseek-v4.1-flash:cloud` |
-| `model.base_url` | `REVIEW_ASSIST_BASE_URL` | `-base-url` (alias `-ollama`) | `OLLAMA_HOST`, else `http://localhost:11434` |
-| `model.api_key` | `REVIEW_ASSIST_API_KEY` | `-api-key` | `ANTHROPIC_API_KEY`, else a placeholder (local Ollama needs no key) |
-| `model.think` | | `-think` | off |
-| `model.log` | `REVIEW_ASSIST_LOG` | `-log FILE` | off; one line per model call |
+| `backend` | `REVIEW_ASSIST_BACKEND` | `-backend` | `anthropic`; or `claude-code` |
+| (model of the chosen backend) | `REVIEW_ASSIST_MODEL` | `-model` | see below |
+| `anthropic.model` | | | `deepseek-v4.1-flash:cloud` |
+| `anthropic.base_url` | `REVIEW_ASSIST_BASE_URL` | `-base-url` (alias `-ollama`) | `OLLAMA_HOST`, else `http://localhost:11434` |
+| `anthropic.api_key` | `REVIEW_ASSIST_API_KEY` | `-api-key` | `ANTHROPIC_API_KEY`, else a placeholder (local Ollama needs no key) |
+| `anthropic.think` | | `-think` | off |
+| `anthropic.log` | `REVIEW_ASSIST_LOG` | `-log FILE` | off; one line per model call |
+| `claude_code.token` | `REVIEW_ASSIST_CLAUDE_TOKEN` | | required for `claude-code` |
+| `claude_code.model` | | | claude's default |
+| `claude_code.effort` | | `-effort` | claude's default |
+| `claude_code.executable` | | | `claude` on `PATH` |
 | `review.concurrency` | | `-concurrency` | 4 agents at once |
 | `review.max_turns` | | `-max-turns` | 40 model turns per agent |
 
@@ -49,22 +56,37 @@ key is an error, so a typo fails loudly instead of being ignored.
 
 ```json
 {
-  "model": {
-    "base_url": "http://localhost:11434",
-    "name": "deepseek-v4.1-flash:cloud",
-    "think": false
+  "backend": "claude-code",
+  "claude_code": {
+    "token": "sk-ant-oat01-…",
+    "model": "sonnet",
+    "effort": "low"
   },
-  "review": {
-    "concurrency": 4,
-    "max_turns": 40
-  }
+  "anthropic": {
+    "base_url": "http://localhost:11434",
+    "model": "deepseek-v4.1-flash:cloud"
+  },
+  "review": { "concurrency": 4, "max_turns": 40 }
 }
 ```
 
-If you put `api_key` in the file, keep the file private (`chmod 600`).
+Keys and tokens in the file are secrets: keep it private (`chmod 600`).
 
-The model must support tools. Thinking is off by default: with it on, models
-here spent their whole token budget thinking and each turn took 20–40 s.
+### Backends
+
+- **`anthropic`** loops over the Messages API (`<base URL>/v1/messages`) with
+  the official SDK. Ollama serves that API, so the default is local Ollama with
+  no key. The model must support tools. Thinking is off by default: with it on,
+  models here spent their whole token budget thinking and each turn took
+  20–40 s.
+- **`claude-code`** runs the `claude` CLI, which loops by itself, through
+  [pi-claude](https://github.com/TheLazyLemur/pi-claude). Mint a token with
+  `claude setup-token` and put it in `claude_code.token`. claude runs in bare
+  mode on that token, with no built-in tools, no settings files, no MCP servers
+  and an empty working directory, so the review tools are the only tools it
+  has. Bare mode taking the token as `ANTHROPIC_AUTH_TOKEN` is undocumented: if
+  reviews start failing with "Not logged in" or hang after a claude upgrade,
+  suspect that first.
 
 ## Keys
 
@@ -122,13 +144,6 @@ To read the code, agents need the PR commits locally:
 If the commits cannot be fetched, agents still get the diff, and the agent tab
 says so.
 
-### Model endpoint
-
-Agents use the official Anthropic Go SDK and the Messages API
-(`<base URL>/v1/messages`). Ollama serves that API, so the default is local
-Ollama with no key. Point `-base-url` and `-api-key` at Anthropic or any
-compatible proxy to use that instead.
-
 ## Layout
 
 Hexagonal: the core holds the domain, its rules and its ports; adapters
@@ -141,17 +156,19 @@ cmd/review-assist/
 internal/core/                 domain core (imports no adapter)
   diff/            unified diff parser; maps each line to its comment anchor
   pr/              PR types, Host port, Service (loads PRs, checks write rules)
-  review/          levels and lenses, Reviewer, agent loop, read-only tools;
-                   ports: Model/Conversation, CodeSource/Code
+  review/          levels and lenses, Reviewer, read-only tools;
+                   ports: Agent, CodeSource/Code
 internal/adapters/
   tui/             inbound: bubbletea screens calling pr.Service and review.Reviewer
   github/          outbound pr.Host over the gh CLI (github.com and GHE)
-  anthropic/       outbound review.Model over the Anthropic Messages API
+  anthropic/       outbound review.Agent: loops over the Anthropic Messages API
+  claudecode/      outbound review.Agent: the claude CLI in bare mode, via pi-claude
   gitrepo/         outbound review.CodeSource/Code over git (read commands only)
 ```
 
-The review core has no path to GitHub: `review.Reviewer` gets a `Model` and a
-`CodeSource`, and neither can post. Only the TUI calls `pr.Service` writes, and
+The review core has no path to GitHub: `review.Reviewer` gets an `Agent` and a
+`CodeSource`, and neither can post. Each backend runs its own loop but may
+only call the tools the core hands it. Only the TUI calls `pr.Service` writes, and
 only after you submit or confirm.
 
 ## Not verified

@@ -7,6 +7,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.9
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.6
+	github.com/TheLazyLemur/pi-claude v0.9.0
 	github.com/anthropics/anthropic-sdk-go v1.75.0
 	github.com/charmbracelet/x/ansi v0.11.8
 )

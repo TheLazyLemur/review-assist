@@ -13,13 +13,20 @@ import (
 // fileConfig is config.json. Pointers tell "not set" apart from zero values,
 // so a file only overrides what it names.
 type fileConfig struct {
-	Model struct {
+	Backend   *string `json:"backend"`
+	Anthropic struct {
 		BaseURL *string `json:"base_url"`
 		APIKey  *string `json:"api_key"`
-		Name    *string `json:"name"`
+		Model   *string `json:"model"`
 		Think   *bool   `json:"think"`
 		Log     *string `json:"log"`
-	} `json:"model"`
+	} `json:"anthropic"`
+	ClaudeCode struct {
+		Token      *string `json:"token"`
+		Model      *string `json:"model"`
+		Effort     *string `json:"effort"`
+		Executable *string `json:"executable"`
+	} `json:"claude_code"`
 	Review struct {
 		Concurrency *int `json:"concurrency"`
 		MaxTurns    *int `json:"max_turns"`
@@ -58,11 +65,16 @@ func loadConfigFile(path string, cfg *config) error {
 	if err := dec.Decode(&fc); err != nil {
 		return fmt.Errorf("config %s: %w", path, err)
 	}
-	setIf(&cfg.model.BaseURL, fc.Model.BaseURL)
-	setIf(&cfg.model.APIKey, fc.Model.APIKey)
-	setIf(&cfg.model.Model, fc.Model.Name)
-	setIf(&cfg.model.Think, fc.Model.Think)
-	setIf(&cfg.model.LogPath, fc.Model.Log)
+	setIf(&cfg.backend, fc.Backend)
+	setIf(&cfg.anthropic.BaseURL, fc.Anthropic.BaseURL)
+	setIf(&cfg.anthropic.APIKey, fc.Anthropic.APIKey)
+	setIf(&cfg.anthropic.Model, fc.Anthropic.Model)
+	setIf(&cfg.anthropic.Think, fc.Anthropic.Think)
+	setIf(&cfg.anthropic.LogPath, fc.Anthropic.Log)
+	setIf(&cfg.claude.Token, fc.ClaudeCode.Token)
+	setIf(&cfg.claude.Model, fc.ClaudeCode.Model)
+	setIf(&cfg.claude.Effort, fc.ClaudeCode.Effort)
+	setIf(&cfg.claude.Executable, fc.ClaudeCode.Executable)
 	setIf(&cfg.concurrency, fc.Review.Concurrency)
 	setIf(&cfg.maxTurns, fc.Review.MaxTurns)
 	return nil

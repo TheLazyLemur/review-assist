@@ -15,6 +15,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/TheLazyLemur/review-assist/internal/adapters/anthropic"
+	"github.com/TheLazyLemur/review-assist/internal/adapters/claudecode"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/github"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/gitrepo"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/tui"
@@ -22,13 +23,41 @@ import (
 	"github.com/TheLazyLemur/review-assist/internal/core/review"
 )
 
-const defaultModel = "deepseek-v4.1-flash:cloud"
+const (
+	backendAnthropic  = "anthropic"
+	backendClaudeCode = "claude-code"
+
+	defaultAnthropicModel = "deepseek-v4.1-flash:cloud"
+)
 
 type config struct {
-	model       anthropic.Config
+	backend     string
+	anthropic   anthropic.Config
+	claude      claudecode.Config // WorkDir is set by run
 	maxTurns    int
 	concurrency int
 	target      string // optional PR argument
+}
+
+// agent builds the chosen backend and names its model for the UI.
+func (c config) agent(cacheDir string) (review.Agent, string, error) {
+	switch c.backend {
+	case backendAnthropic:
+		return anthropic.New(c.anthropic), c.anthropic.Model, nil
+	case backendClaudeCode:
+		// An empty, private directory: claude sees no project there, and
+		// reads code only through the review tools.
+		dir := filepath.Join(cacheDir, "claude-workdir")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, "", fmt.Errorf("claude work dir: %w", err)
+		}
+		cc := c.claude
+		cc.WorkDir = dir
+		name := "claude " + firstSet(cc.Model, "(default model)")
+		return claudecode.New(cc), name, nil
+	default:
+		return nil, "", fmt.Errorf("unknown backend %q", c.backend)
+	}
 }
 
 // run is the composition root: it reads configuration, builds the adapters,
@@ -55,21 +84,24 @@ func run(args []string) error {
 	}
 	cache, err := os.UserCacheDir()
 	if err != nil {
-		cache = "" // gitrepo reports it only if a mirror is needed
-	} else {
-		cache = filepath.Join(cache, "review-assist")
+		return fmt.Errorf("no cache dir: %w", err)
+	}
+	cache = filepath.Join(cache, "review-assist")
+	agent, modelName, err := cfg.agent(cache)
+	if err != nil {
+		return err
 	}
 
 	prs := pr.NewService(github.NewClient(runner, repo), repo)
 	reviewer := review.NewReviewer(
-		anthropic.New(cfg.model),
+		agent,
 		gitrepo.Source{Cwd: cwd, CacheDir: cache},
 		cfg.maxTurns, cfg.concurrency,
 	)
 	app := tui.New(tui.Deps{
 		PRs:       prs,
 		Reviewer:  reviewer,
-		ModelName: cfg.model.Model,
+		ModelName: modelName,
 		Cwd:       cwd,
 		LocalRepo: localRepo,
 		OpenPR:    openPR,
@@ -85,10 +117,11 @@ func run(args []string) error {
 // built-in defaults and never override the file.
 func parseConfig(args []string, getenv func(string) string, configFile string) (config, error) {
 	cfg := config{
-		model: anthropic.Config{
+		backend: backendAnthropic,
+		anthropic: anthropic.Config{
 			BaseURL: firstSet(getenv("OLLAMA_HOST"), "http://localhost:11434"),
 			APIKey:  firstSet(getenv("ANTHROPIC_API_KEY"), "ollama"), // the SDK needs a key; Ollama ignores it
-			Model:   defaultModel,
+			Model:   defaultAnthropicModel,
 		},
 		maxTurns:    40,
 		concurrency: 4,
@@ -96,11 +129,14 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 	if err := loadConfigFile(configFile, &cfg); err != nil {
 		return cfg, err
 	}
+	// REVIEW_ASSIST_MODEL and -model apply to whichever backend ends up chosen.
+	model := getenv("REVIEW_ASSIST_MODEL")
 	for env, dst := range map[string]*string{
-		"REVIEW_ASSIST_BASE_URL": &cfg.model.BaseURL,
-		"REVIEW_ASSIST_API_KEY":  &cfg.model.APIKey,
-		"REVIEW_ASSIST_MODEL":    &cfg.model.Model,
-		"REVIEW_ASSIST_LOG":      &cfg.model.LogPath,
+		"REVIEW_ASSIST_BACKEND":      &cfg.backend,
+		"REVIEW_ASSIST_BASE_URL":     &cfg.anthropic.BaseURL,
+		"REVIEW_ASSIST_API_KEY":      &cfg.anthropic.APIKey,
+		"REVIEW_ASSIST_LOG":          &cfg.anthropic.LogPath,
+		"REVIEW_ASSIST_CLAUDE_TOKEN": &cfg.claude.Token,
 	} {
 		if v := getenv(env); v != "" {
 			*dst = v
@@ -108,13 +144,15 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 	}
 
 	fs := flag.NewFlagSet("review-assist", flag.ContinueOnError)
-	fs.StringVar(&cfg.model.BaseURL, "base-url", cfg.model.BaseURL, "Anthropic-compatible API base URL (env REVIEW_ASSIST_BASE_URL)")
-	fs.StringVar(&cfg.model.BaseURL, "ollama", cfg.model.BaseURL, "deprecated alias of -base-url")
-	// No default shown: -h must never print a key taken from the environment.
-	apiKey := fs.String("api-key", "", "API key sent as x-api-key (env REVIEW_ASSIST_API_KEY)")
-	fs.StringVar(&cfg.model.Model, "model", cfg.model.Model, "model for review agents; needs tool support (env REVIEW_ASSIST_MODEL)")
-	fs.BoolVar(&cfg.model.Think, "think", cfg.model.Think, "let the model use extended thinking (slower)")
-	fs.StringVar(&cfg.model.LogPath, "log", cfg.model.LogPath, "append one line per model call to this file (env REVIEW_ASSIST_LOG)")
+	fs.StringVar(&cfg.backend, "backend", cfg.backend, "agent backend: anthropic or claude-code (env REVIEW_ASSIST_BACKEND)")
+	fs.StringVar(&model, "model", model, "model for review agents, for the chosen backend (env REVIEW_ASSIST_MODEL)")
+	fs.StringVar(&cfg.anthropic.BaseURL, "base-url", cfg.anthropic.BaseURL, "anthropic: API base URL (env REVIEW_ASSIST_BASE_URL)")
+	fs.StringVar(&cfg.anthropic.BaseURL, "ollama", cfg.anthropic.BaseURL, "deprecated alias of -base-url")
+	// No defaults shown for secrets: -h must never print a key from the file or env.
+	apiKey := fs.String("api-key", "", "anthropic: API key sent as x-api-key (env REVIEW_ASSIST_API_KEY)")
+	fs.BoolVar(&cfg.anthropic.Think, "think", cfg.anthropic.Think, "anthropic: let the model use extended thinking (slower)")
+	fs.StringVar(&cfg.anthropic.LogPath, "log", cfg.anthropic.LogPath, "anthropic: append one line per model call to this file (env REVIEW_ASSIST_LOG)")
+	fs.StringVar(&cfg.claude.Effort, "effort", cfg.claude.Effort, "claude-code: low, medium, high, xhigh or max")
 	fs.IntVar(&cfg.concurrency, "concurrency", cfg.concurrency, "max agents running at once")
 	fs.IntVar(&cfg.maxTurns, "max-turns", cfg.maxTurns, "max model turns per agent (min 4)")
 	fs.Usage = func() {
@@ -126,6 +164,8 @@ GitHub Enterprise host, OWNER/REPO#N or HOST/OWNER/REPO#N.
 
 Settings come from the config file, then REVIEW_ASSIST_* env vars, then flags;
 the last one set wins. Config file: `+configFile+`
+The claude-code backend's token (from `+"`claude setup-token`"+`) is set only in
+the file (claude_code.token) or REVIEW_ASSIST_CLAUDE_TOKEN, never by flag.
 
 flags:
 `)
@@ -135,9 +175,24 @@ flags:
 		return cfg, err
 	}
 	if *apiKey != "" {
-		cfg.model.APIKey = *apiKey
+		cfg.anthropic.APIKey = *apiKey
 	}
-	cfg.model.BaseURL = normaliseBaseURL(cfg.model.BaseURL)
+	cfg.anthropic.BaseURL = normaliseBaseURL(cfg.anthropic.BaseURL)
+	switch cfg.backend {
+	case backendAnthropic:
+		if model != "" {
+			cfg.anthropic.Model = model
+		}
+	case backendClaudeCode:
+		if model != "" {
+			cfg.claude.Model = model
+		}
+		if cfg.claude.Token == "" {
+			return cfg, fmt.Errorf("the claude-code backend needs a token: run `claude setup-token` and put it in claude_code.token in %s", configFile)
+		}
+	default:
+		return cfg, fmt.Errorf("unknown backend %q: use %s or %s", cfg.backend, backendAnthropic, backendClaudeCode)
+	}
 	switch {
 	case fs.NArg() > 1:
 		fs.Usage()
