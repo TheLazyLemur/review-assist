@@ -10,6 +10,7 @@ require (
 	github.com/TheLazyLemur/pi-claude v0.9.0
 	github.com/anthropics/anthropic-sdk-go v1.75.0
 	github.com/charmbracelet/x/ansi v0.11.8
+	golang.org/x/sync v0.22.0
 	golang.org/x/term v0.46.0
 )
 
@@ -46,7 +47,6 @@ require (
 	github.com/yuin/goldmark-emoji v1.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/net v0.41.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.27.0 // indirect
 )

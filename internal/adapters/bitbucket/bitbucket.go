@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/TheLazyLemur/review-assist/internal/core/diff"
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 )
@@ -254,6 +256,12 @@ func newInline(a pr.Anchor) (*newInlineDTO, error) {
 	return in, nil
 }
 
+// A binary file's lines are null, which decodes as zero.
+type diffstatDTO struct {
+	LinesAdded   int `json:"lines_added"`
+	LinesRemoved int `json:"lines_removed"`
+}
+
 type mergeDTO struct {
 	MergeStrategy string `json:"merge_strategy"`
 }
@@ -311,7 +319,34 @@ func (c *Client) List(ctx context.Context, state pr.State) ([]pr.Summary, error)
 		}
 		prs = append(prs, s)
 	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(maxDiffstatsInFlight)
+	for i := range prs {
+		g.Go(func() error { return c.addCounts(gctx, &prs[i]) })
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
 	return prs, nil
+}
+
+// maxDiffstatsInFlight bounds List's diffstat requests, one per pull request
+// and up to listLimit of them.
+const maxDiffstatsInFlight = 8
+
+// addCounts fills the line and file counts from the diffstat, because
+// Bitbucket's pull request carries none.
+func (c *Client) addCounts(ctx context.Context, s *pr.Summary) error {
+	files, err := getAll[diffstatDTO](ctx, c, c.pullRequestPath(s.Number, "/diffstat"), nil, 0)
+	if err != nil {
+		return fmt.Errorf("%w (diffstat of pull request %d)", err, s.Number)
+	}
+	for _, f := range files {
+		s.Additions += f.LinesAdded
+		s.Deletions += f.LinesRemoved
+	}
+	s.ChangedFiles = len(files)
+	return nil
 }
 
 func (c *Client) Get(ctx context.Context, number int) (*pr.PR, error) {
@@ -326,6 +361,9 @@ func (c *Client) Get(ctx context.Context, number int) (*pr.PR, error) {
 	p := &pr.PR{
 		Summary: summary, Body: d.Description, URL: d.Links.HTML.Href,
 		HeadSHA: d.Source.Commit.Hash, BaseSHA: d.Destination.Commit.Hash, CreatedAt: d.CreatedOn,
+	}
+	if err := c.addCounts(ctx, &p.Summary); err != nil {
+		return nil, err
 	}
 	for _, part := range d.Participants {
 		// Null: a reviewer who has not decided yet, or someone who only commented.
