@@ -59,8 +59,6 @@ review-assist: several git remotes point at code hosts; check out a branch that 
   mirror  bitbucket.org/acme-mirror/scheduler
 ```
 
-Not yet: today the repository comes from `gh repo view`.
-
 ## Settings
 
 Each setting can come from the config file, an environment variable or a flag.

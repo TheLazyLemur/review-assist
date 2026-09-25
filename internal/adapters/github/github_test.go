@@ -75,3 +75,34 @@ func TestFailedCommandErrorLeadsWithTheReason(t *testing.T) {
 		t.Errorf("error repeats the full arguments: %v", err)
 	}
 }
+
+type cannedRunner struct{ out string }
+
+func (r cannedRunner) Run(context.Context, []byte, string, ...string) ([]byte, error) {
+	return []byte(r.out), nil
+}
+
+func TestPlatformsCountsHostnamesGhIsLoggedInToAsGitHub(t *testing.T) {
+	// given
+	// ... gh logged in to github.com and an enterprise server
+	run := cannedRunner{out: `{"hosts":{"github.com":[{"state":"success","active":true,"host":"github.com"}],"ghe.example.com":[{"state":"success","active":true,"host":"ghe.example.com"}]}}`}
+	platformOf := github.Platforms(context.Background(), run)
+
+	// when
+	// ... the enterprise server, bitbucket.org and an unknown hostname are looked up
+	ghe, gheOK := platformOf("ghe.example.com")
+	bitbucket, bitbucketOK := platformOf("bitbucket.org")
+	_, gitlabOK := platformOf("gitlab.com")
+
+	// then
+	// ... the enterprise server is GitHub, bitbucket.org is Bitbucket, and the unknown one is on no code host
+	if ghe != pr.GitHub || !gheOK {
+		t.Errorf("ghe.example.com: got %q %v", ghe, gheOK)
+	}
+	if bitbucket != pr.Bitbucket || !bitbucketOK {
+		t.Errorf("bitbucket.org: got %q %v", bitbucket, bitbucketOK)
+	}
+	if gitlabOK {
+		t.Error("gitlab.com counted as a code host")
+	}
+}

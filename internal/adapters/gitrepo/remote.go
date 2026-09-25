@@ -1,0 +1,138 @@
+package gitrepo
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
+	"os/exec"
+	"strings"
+
+	"github.com/TheLazyLemur/review-assist/internal/core/pr"
+)
+
+// Remote is a git remote and its fetch URL.
+type Remote struct{ Name, URL string }
+
+// PlatformOf says which platform a hostname is on; false when it is on no
+// supported code host.
+type PlatformOf func(hostname string) (pr.Platform, bool)
+
+// FindRemote picks the repository of the clone at dir from its git remotes,
+// by PickRemote.
+func FindRemote(ctx context.Context, dir string, platformOf PlatformOf) (pr.Repo, error) {
+	r := &Repo{dir: dir}
+	if _, err := r.git(ctx, "rev-parse", "--git-dir"); err != nil {
+		return pr.Repo{}, fmt.Errorf("%s is not in a git repository", dir)
+	}
+	out, err := r.git(ctx, "remote", "-v")
+	if err != nil {
+		return pr.Repo{}, fmt.Errorf("git remote: %w", err)
+	}
+	var remotes []Remote
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 3 && f[2] == "(fetch)" {
+			remotes = append(remotes, Remote{Name: f[0], URL: f[1]})
+		}
+	}
+	tracked, err := r.trackedRemote(ctx)
+	if err != nil {
+		return pr.Repo{}, err
+	}
+	return PickRemote(remotes, tracked, platformOf)
+}
+
+// trackedRemote is "" on a detached HEAD or a branch that tracks nothing.
+func (r *Repo) trackedRemote(ctx context.Context) (string, error) {
+	out, err := r.git(ctx, "branch", "--show-current")
+	if err != nil {
+		return "", fmt.Errorf("git branch: %w", err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		return "", nil
+	}
+	out, err = r.git(ctx, "config", "--get", "branch."+branch+".remote")
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return "", nil // git config exits 1 when the key is not set
+	}
+	if err != nil {
+		return "", fmt.Errorf("git config: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// PickRemote applies the rule for the remote in CONTEXT.md: the first of the
+// tracked remote, origin, and the only remote on a supported code host.
+// remotes are in `git remote` order, which the refusal keeps. tracked is ""
+// when the current branch tracks nothing.
+func PickRemote(remotes []Remote, tracked string, platformOf PlatformOf) (pr.Repo, error) {
+	type candidate struct {
+		remote string
+		repo   pr.Repo
+	}
+	var candidates []candidate
+	for _, r := range remotes {
+		hostname, owner, name, ok := parseRemoteURL(r.URL)
+		if !ok {
+			continue
+		}
+		platform, ok := platformOf(hostname)
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, candidate{r.Name, pr.Repo{Platform: platform, Hostname: hostname, Owner: owner, Name: name}})
+	}
+	for _, want := range []string{tracked, "origin"} {
+		for _, c := range candidates {
+			if c.remote == want {
+				return c.repo, nil
+			}
+		}
+	}
+	switch len(candidates) {
+	case 0:
+		return pr.Repo{}, errors.New("no git remote points at a supported code host (GitHub, Bitbucket)")
+	case 1:
+		return candidates[0].repo, nil
+	}
+	width := 0
+	for _, c := range candidates {
+		width = max(width, len(c.remote))
+	}
+	var b strings.Builder
+	b.WriteString("several git remotes point at code hosts; check out a branch that tracks one")
+	for _, c := range candidates {
+		fmt.Fprintf(&b, "\n  %-*s  %s", width, c.remote, c.repo.Qualified())
+	}
+	return pr.Repo{}, errors.New(b.String())
+}
+
+// parseRemoteURL reads git@host:owner/name.git, ssh://git@host:port/owner/name.git
+// and https://[user@]host/owner/name.git. Anything else, such as a local path
+// or a path deeper than owner/name, is not on a code host.
+func parseRemoteURL(raw string) (hostname, owner, name string, ok bool) {
+	var path string
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return "", "", "", false
+		}
+		hostname, path = u.Hostname(), u.Path
+	} else {
+		host, p, found := strings.Cut(raw, ":")
+		// A slash before the colon makes it a local path, not scp-like syntax.
+		if !found || strings.Contains(host, "/") {
+			return "", "", "", false
+		}
+		hostname, path = host[strings.LastIndex(host, "@")+1:], p
+	}
+	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
+	owner, name, found := strings.Cut(path, "/")
+	if hostname == "" || !found || owner == "" || name == "" || strings.Contains(name, "/") {
+		return "", "", "", false
+	}
+	return strings.ToLower(hostname), owner, name, true
+}

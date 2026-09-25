@@ -28,6 +28,26 @@ func TestParseRefKeepsTheEnterpriseHost(t *testing.T) {
 	}
 }
 
+func TestParseRefReadsABitbucketPullRequestURL(t *testing.T) {
+	// given
+	// ... a pull request URL on bitbucket.org
+	ref := "https://bitbucket.org/acme/storefront/pull-requests/12"
+
+	// when
+	// ... it is parsed
+	repo, number, err := pr.ParseRef(ref)
+
+	// then
+	// ... it is on the Bitbucket platform, with the workspace as owner
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := pr.Repo{Platform: pr.Bitbucket, Hostname: "bitbucket.org", Owner: "acme", Name: "storefront"}
+	if repo != want || number != 12 {
+		t.Fatalf("want %+v #12, got %+v #%d", want, repo, number)
+	}
+}
+
 // recordingHost records posts. Other CodeHost methods are not reached.
 type recordingHost struct {
 	pr.CodeHost

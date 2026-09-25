@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -51,26 +50,38 @@ func (r ExecRunner) Run(ctx context.Context, stdin []byte, name string, args ...
 	return stdout.Bytes(), nil
 }
 
-// Detect resolves the GitHub repository for the runner's directory the same
-// way every other gh command there will.
-func Detect(ctx context.Context, run Runner) (pr.Repo, error) {
-	out, err := run.Run(ctx, nil, "gh", "repo", "view", "--json", "owner,name,url")
-	if err != nil {
-		return pr.Repo{}, fmt.Errorf("not in a GitHub repository gh can resolve: %w", err)
+// Platforms says which platform a hostname is on. A hostname gh is logged in
+// to is GitHub on that hostname. gh is asked at most once, and only for a
+// hostname other than github.com and bitbucket.org, so a Bitbucket clone does
+// not need gh.
+func Platforms(ctx context.Context, run Runner) func(hostname string) (pr.Platform, bool) {
+	var once sync.Once
+	var ghHosts map[string]json.RawMessage
+	return func(hostname string) (pr.Platform, bool) {
+		switch hostname {
+		case "github.com":
+			return pr.GitHub, true
+		case "bitbucket.org":
+			return pr.Bitbucket, true
+		}
+		once.Do(func() {
+			// A failure leaves no hosts: without a working gh no GitHub
+			// Enterprise server is usable anyway.
+			out, err := run.Run(ctx, nil, "gh", "auth", "status", "--json", "hosts")
+			if err != nil {
+				return
+			}
+			var v struct{ Hosts map[string]json.RawMessage }
+			if err := json.Unmarshal(out, &v); err != nil {
+				return
+			}
+			ghHosts = v.Hosts
+		})
+		if _, ok := ghHosts[hostname]; ok {
+			return pr.GitHub, true
+		}
+		return "", false
 	}
-	var v struct {
-		Owner struct{ Login string }
-		Name  string
-		URL   string
-	}
-	if err := json.Unmarshal(out, &v); err != nil {
-		return pr.Repo{}, fmt.Errorf("gh repo view: %w", err)
-	}
-	u, err := url.Parse(v.URL)
-	if err != nil || u.Host == "" || v.Owner.Login == "" || v.Name == "" {
-		return pr.Repo{}, fmt.Errorf("gh repo view returned no host/owner/name: %s", out)
-	}
-	return pr.Repo{Platform: pr.GitHub, Hostname: u.Host, Owner: v.Owner.Login, Name: v.Name}, nil
 }
 
 // Client is a pr.Host for one repository.

@@ -14,11 +14,14 @@ import (
 
 type Platform string
 
-const GitHub Platform = "github"
+const (
+	GitHub    Platform = "github"
+	Bitbucket Platform = "bitbucket"
+)
 
 type Repo struct {
 	Platform Platform
-	Hostname string // github.com or a GitHub Enterprise server
+	Hostname string // such as github.com, a GitHub Enterprise server or bitbucket.org
 	Owner    string
 	Name     string
 }
@@ -31,14 +34,19 @@ func (r Repo) Qualified() string { return r.Hostname + "/" + r.FullName() }
 func (r Repo) URL() string { return "https://" + r.Qualified() }
 
 var (
-	prURLRe    = regexp.MustCompile(`^(?:https?://)?([^/\s]+)/([^/\s]+)/([^/\s]+)/pulls?/(\d+)`)
-	shortRefRe = regexp.MustCompile(`^(?:([^/\s]+)/)?([^/\s]+)/([^/#\s]+)#(\d+)$`)
+	bitbucketURLRe = regexp.MustCompile(`^(?:https?://)?bitbucket\.org/([^/\s]+)/([^/\s]+)/pull-requests/(\d+)`)
+	prURLRe        = regexp.MustCompile(`^(?:https?://)?([^/\s]+)/([^/\s]+)/([^/\s]+)/pulls?/(\d+)`)
+	shortRefRe     = regexp.MustCompile(`^(?:([^/\s]+)/)?([^/\s]+)/([^/#\s]+)#(\d+)$`)
 )
 
-// ParseRef accepts a PR URL on github.com or a GHE server, HOSTNAME/OWNER/REPO#N
-// or OWNER/REPO#N (github.com).
+// ParseRef accepts a PR URL on github.com, a GHE server or bitbucket.org,
+// HOSTNAME/OWNER/REPO#N or OWNER/REPO#N (github.com).
 func ParseRef(s string) (Repo, int, error) {
 	s = strings.TrimSpace(s)
+	if m := bitbucketURLRe.FindStringSubmatch(s); m != nil {
+		n, _ := strconv.Atoi(m[3])
+		return Repo{Platform: Bitbucket, Hostname: "bitbucket.org", Owner: m[1], Name: m[2]}, n, nil
+	}
 	if m := prURLRe.FindStringSubmatch(s); m != nil {
 		n, _ := strconv.Atoi(m[4])
 		return Repo{Platform: GitHub, Hostname: m[1], Owner: m[2], Name: strings.TrimSuffix(m[3], ".git")}, n, nil

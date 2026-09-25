@@ -79,7 +79,7 @@ func run(args []string) error {
 		return err
 	}
 	runner := github.ExecRunner{Dir: cwd}
-	repo, openPR, localRepo, err := resolveTarget(context.Background(), runner, cfg.target)
+	repo, openPR, localRepo, err := resolveTarget(context.Background(), cwd, runner, cfg.target)
 	if err != nil {
 		return err
 	}
@@ -220,8 +220,16 @@ func normaliseBaseURL(u string) string {
 	return strings.TrimSuffix(u, "/")
 }
 
-func resolveTarget(ctx context.Context, runner github.Runner, target string) (repo pr.Repo, openPR int, localRepo bool, err error) {
-	local, localErr := github.Detect(ctx, runner)
+func resolveTarget(ctx context.Context, cwd string, runner github.Runner, target string) (pr.Repo, int, bool, error) {
+	repo, openPR, localRepo, err := findTarget(ctx, cwd, runner, target)
+	if err == nil && repo.Platform == pr.Bitbucket {
+		return pr.Repo{}, 0, false, fmt.Errorf("%s is on Bitbucket, which is not supported yet", repo.Qualified())
+	}
+	return repo, openPR, localRepo, err
+}
+
+func findTarget(ctx context.Context, cwd string, runner github.Runner, target string) (repo pr.Repo, openPR int, localRepo bool, err error) {
+	local, localErr := gitrepo.FindRemote(ctx, cwd, github.Platforms(ctx, runner))
 	if target == "" {
 		return local, 0, localErr == nil, localErr
 	}
