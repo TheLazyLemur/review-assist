@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,12 +56,28 @@ func pullRequestJSON(id int, state, nickname string) string {
 	return fmt.Sprintf(`{"id":%d,"title":"t%d","state":%q,"author":{"nickname":%q}}`, id, id, state, nickname)
 }
 
+func diffstatJSON(added, removed int) string {
+	return fmt.Sprintf(`{"type":"diffstat","status":"modified","lines_added":%d,"lines_removed":%d}`, added, removed)
+}
+
+// withEmptyDiffstats answers every pull request's diffstat with no files and
+// hands every other request to h.
+func withEmptyDiffstats(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/diffstat") {
+			_, _ = fmt.Fprint(w, `{"values":[]}`)
+			return
+		}
+		h(w, r)
+	}
+}
+
 func TestEveryRequestCarriesBasicAuthOfEmailAndToken(t *testing.T) {
 	// given
 	// ... a server that records the Authorization header of every request, with pull requests over two pages
 	var got []string
 	var srv *httptest.Server
-	srv = serve(t, func(w http.ResponseWriter, r *http.Request) {
+	srv = serve(t, withEmptyDiffstats(func(w http.ResponseWriter, r *http.Request) {
 		got = append(got, r.Header.Get("Authorization"))
 		switch {
 		case r.URL.Path == "/user":
@@ -70,7 +87,7 @@ func TestEveryRequestCarriesBasicAuthOfEmailAndToken(t *testing.T) {
 		default:
 			fmt.Fprintf(w, `{"values":[%s],"next":"%s%s?state=OPEN&pagelen=50&page=2"}`, pullRequestJSON(1, "OPEN", "dan"), srv.URL, listPath)
 		}
-	})
+	}))
 	c := bitbucket.NewClient(srv.URL, "dan@example.com", "s3cret", repo, bitbucket.Options{})
 
 	// when
@@ -145,14 +162,14 @@ func TestListRequestsTheBitbucketStatesForEachFilter(t *testing.T) {
 			// given
 			// ... a server that returns one pull request in each requested state
 			var query []string
-			srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			srv := serve(t, withEmptyDiffstats(func(w http.ResponseWriter, r *http.Request) {
 				query = r.URL.Query()["state"]
 				var values []string
 				for i, s := range query {
 					values = append(values, pullRequestJSON(i+1, s, "dan"))
 				}
 				fmt.Fprintf(w, `{"values":[%s]}`, strings.Join(values, ","))
-			})
+			}))
 			c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 			// when
@@ -181,12 +198,12 @@ func TestListRequestsTheBitbucketStatesForEachFilter(t *testing.T) {
 func TestListMapsPullRequestFields(t *testing.T) {
 	// given
 	// ... a server with one draft pull request
-	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+	srv := serve(t, withEmptyDiffstats(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"values":[{"id":7,"title":"Add basket","state":"OPEN","draft":true,
 			"author":{"nickname":"dan","display_name":"Dan R"},
 			"source":{"branch":{"name":"feat/basket"}},"destination":{"branch":{"name":"main"}},
 			"updated_on":"2026-09-24T10:11:12.123456+00:00"}]}`)
-	})
+	}))
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
@@ -212,7 +229,7 @@ func TestListFollowsNextAcrossPages(t *testing.T) {
 	// ... pull requests split over two pages, the first linking to the second
 	var pagelen, sort string
 	var srv *httptest.Server
-	srv = serve(t, func(w http.ResponseWriter, r *http.Request) {
+	srv = serve(t, withEmptyDiffstats(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") == "2" {
 			fmt.Fprintf(w, `{"values":[%s]}`, pullRequestJSON(3, "OPEN", "dan"))
 			return
@@ -220,7 +237,7 @@ func TestListFollowsNextAcrossPages(t *testing.T) {
 		pagelen, sort = r.URL.Query().Get("pagelen"), r.URL.Query().Get("sort")
 		fmt.Fprintf(w, `{"values":[%s,%s],"next":"%s%s?state=OPEN&pagelen=50&page=2"}`,
 			pullRequestJSON(1, "OPEN", "dan"), pullRequestJSON(2, "OPEN", "dan"), srv.URL, listPath)
-	})
+	}))
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
@@ -252,7 +269,7 @@ func TestListStopsAtOneHundredPullRequests(t *testing.T) {
 	// ... pages of 60 pull requests, each linking to the next
 	var pages []int
 	var srv *httptest.Server
-	srv = serve(t, func(w http.ResponseWriter, r *http.Request) {
+	srv = serve(t, withEmptyDiffstats(func(w http.ResponseWriter, r *http.Request) {
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		pages = append(pages, page)
 		var values []string
@@ -260,7 +277,7 @@ func TestListStopsAtOneHundredPullRequests(t *testing.T) {
 			values = append(values, pullRequestJSON(i+1, "OPEN", "dan"))
 		}
 		fmt.Fprintf(w, `{"values":[%s],"next":"%s%s?page=%d"}`, strings.Join(values, ","), srv.URL, listPath, page+1)
-	})
+	}))
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
@@ -307,6 +324,153 @@ func TestListDoesNotSendCredentialsToAnotherHost(t *testing.T) {
 	}
 }
 
+func TestListSetsTheCountsOfEveryPullRequestFromItsDiffstat(t *testing.T) {
+	// given
+	// ... three pull requests, each with its own diffstat
+	diffstats := map[string]string{
+		listPath + "/1/diffstat": diffstatJSON(1, 2),
+		listPath + "/2/diffstat": diffstatJSON(3, 0) + "," + diffstatJSON(4, 5),
+		listPath + "/3/diffstat": `{"type":"diffstat","status":"added","lines_added":null,"lines_removed":null}`,
+	}
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == listPath {
+			_, _ = fmt.Fprintf(w, `{"values":[%s,%s,%s]}`,
+				pullRequestJSON(1, "OPEN", "dan"), pullRequestJSON(2, "OPEN", "dan"), pullRequestJSON(3, "OPEN", "dan"))
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"values":[%s]}`, diffstats[r.URL.Path])
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
+
+	// when
+	// ... open pull requests are listed
+	got, err := c.List(context.Background(), pr.Open)
+
+	// then
+	// ... each carries the lines and files of its own diffstat, a binary file's null lines counting as none
+	if err != nil {
+		t.Fatal(err)
+	}
+	type counts struct{ Number, Additions, Deletions, ChangedFiles int }
+	var gotCounts []counts
+	for _, s := range got {
+		gotCounts = append(gotCounts, counts{s.Number, s.Additions, s.Deletions, s.ChangedFiles})
+	}
+	want := []counts{{1, 1, 2, 1}, {2, 7, 5, 2}, {3, 0, 0, 1}}
+	if !slices.Equal(gotCounts, want) {
+		t.Errorf("want %+v, got %+v", want, gotCounts)
+	}
+}
+
+func TestListSumsADiffstatAcrossItsPages(t *testing.T) {
+	// given
+	// ... one pull request whose diffstat is split over two pages
+	var srv *httptest.Server
+	srv = serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == listPath:
+			_, _ = fmt.Fprintf(w, `{"values":[%s]}`, pullRequestJSON(1, "OPEN", "dan"))
+		case r.URL.Query().Get("page") == "2":
+			_, _ = fmt.Fprintf(w, `{"values":[%s]}`, diffstatJSON(10, 20))
+		default:
+			_, _ = fmt.Fprintf(w, `{"values":[%s,%s],"next":"%s%s/1/diffstat?page=2"}`, diffstatJSON(1, 2), diffstatJSON(3, 4), srv.URL, listPath)
+		}
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
+
+	// when
+	// ... open pull requests are listed
+	got, err := c.List(context.Background(), pr.Open)
+
+	// then
+	// ... the counts cover the files on both pages
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 pull request, got %d", len(got))
+	}
+	if got[0].Additions != 14 || got[0].Deletions != 26 || got[0].ChangedFiles != 3 {
+		t.Errorf("want +14 -26 in 3 files, got +%d -%d in %d files", got[0].Additions, got[0].Deletions, got[0].ChangedFiles)
+	}
+}
+
+func TestListFailsNamingThePullRequestWhoseDiffstatFails(t *testing.T) {
+	// given
+	// ... three pull requests, the diffstat of the second refused
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case listPath:
+			_, _ = fmt.Fprintf(w, `{"values":[%s,%s,%s]}`,
+				pullRequestJSON(1, "OPEN", "dan"), pullRequestJSON(42, "OPEN", "dan"), pullRequestJSON(3, "OPEN", "dan"))
+		case listPath + "/42/diffstat":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"type":"error","error":{"message":"Something broke"}}`)
+		default:
+			_, _ = fmt.Fprintf(w, `{"values":[%s]}`, diffstatJSON(1, 1))
+		}
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
+
+	// when
+	// ... open pull requests are listed
+	got, err := c.List(context.Background(), pr.Open)
+
+	// then
+	// ... the list fails with Bitbucket's reason first, naming the pull request, and returns nothing
+	if err == nil || !strings.HasPrefix(err.Error(), "Something broke") || !strings.Contains(err.Error(), "pull request 42") {
+		t.Fatalf("got %v", err)
+	}
+	if got != nil {
+		t.Errorf("want no pull requests, got %+v", got)
+	}
+}
+
+func TestListSendsNoMoreThanEightDiffstatRequestsAtOnce(t *testing.T) {
+	// given
+	// ... twenty pull requests whose diffstats are each held for a moment
+	var mu sync.Mutex
+	var inFlight, peak int
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == listPath {
+			var values []string
+			for i := range 20 {
+				values = append(values, pullRequestJSON(i+1, "OPEN", "dan"))
+			}
+			_, _ = fmt.Fprintf(w, `{"values":[%s]}`, strings.Join(values, ","))
+			return
+		}
+		mu.Lock()
+		inFlight++
+		peak = max(peak, inFlight)
+		mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		_, _ = fmt.Fprintf(w, `{"values":[%s]}`, diffstatJSON(1, 1))
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
+
+	// when
+	// ... open pull requests are listed
+	got, err := c.List(context.Background(), pr.Open)
+
+	// then
+	// ... all twenty come back, with at most eight diffstats requested at once and more than one
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 20 {
+		t.Errorf("want 20 pull requests, got %d", len(got))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if peak > 8 || peak < 2 {
+		t.Errorf("peak diffstat requests in flight: want 2 to 8, got %d", peak)
+	}
+}
+
 func TestListRejectsAnUnknownState(t *testing.T) {
 	// given
 	// ... a server that answers with a state Bitbucket has not documented
@@ -329,14 +493,14 @@ func TestListRejectsAnUnknownState(t *testing.T) {
 func TestViewerOwnsThePullRequestsTheyOpened(t *testing.T) {
 	// given
 	// ... a viewer whose display name differs from their nickname, and their pull request
-	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+	srv := serve(t, withEmptyDiffstats(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/user":
 			fmt.Fprint(w, `{"nickname":"dan","display_name":"Dan R","account_id":"712020:abc","uuid":"{u}"}`)
 		case listPath:
 			fmt.Fprint(w, `{"values":[{"id":1,"state":"OPEN","author":{"nickname":"dan","display_name":"Dan R","account_id":"712020:abc"}}]}`)
 		}
-	})
+	}))
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 	viewer, err := c.Viewer(context.Background())
 	if err != nil {
@@ -375,13 +539,18 @@ func pullRequestWithParticipants(participants string) string {
 
 func TestGetMapsPullRequestFields(t *testing.T) {
 	// given
-	// ... a pull request with no participants
+	// ... a pull request with no participants, whose diffstat redirects to two files
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != prPath {
+		switch r.URL.Path {
+		case prPath:
+			_, _ = fmt.Fprint(w, pullRequestWithParticipants(""))
+		case prPath + "/diffstat":
+			http.Redirect(w, r, "/repositories/acme/shop/diffstat/a1b2c3d4e5f6..f6e5d4c3b2a1?from_pullrequest_id=7&topic=true", http.StatusFound)
+		case "/repositories/acme/shop/diffstat/a1b2c3d4e5f6..f6e5d4c3b2a1":
+			_, _ = fmt.Fprintf(w, `{"values":[%s,%s],"size":2}`, diffstatJSON(5, 1), diffstatJSON(2, 8))
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		fmt.Fprint(w, pullRequestWithParticipants(""))
 	})
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
@@ -390,7 +559,7 @@ func TestGetMapsPullRequestFields(t *testing.T) {
 	got, err := c.Get(context.Background(), 7)
 
 	// then
-	// ... head and base are the source and destination commits, and the rest maps across
+	// ... head and base are the source and destination commits, the counts come from the diffstat, and the rest maps across
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,6 +567,7 @@ func TestGetMapsPullRequestFields(t *testing.T) {
 		Summary: pr.Summary{
 			Number: 7, Title: "Add basket", Author: "dan", HeadRef: "feat/basket", BaseRef: "main",
 			State: "OPEN", UpdatedAt: parseTime(t, "2026-09-24T10:11:12.123456+00:00"),
+			Additions: 7, Deletions: 9, ChangedFiles: 2,
 		},
 		Body: "Adds a basket.", URL: "https://bitbucket.org/acme/shop/pull-requests/7",
 		HeadSHA: "a1b2c3d4e5f6", BaseSHA: "f6e5d4c3b2a1", CreatedAt: parseTime(t, "2026-09-20T08:00:00.000001+00:00"),
