@@ -1,8 +1,9 @@
-// Package bitbucket reads pull requests from Bitbucket Cloud over its REST
-// API.
+// Package bitbucket reads and reviews pull requests on Bitbucket Cloud over
+// its REST API.
 package bitbucket
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -30,7 +31,23 @@ type Client struct {
 // NewClient takes the API root, https://api.bitbucket.org/2.0 in production,
 // and an Atlassian account email with an API token.
 func NewClient(baseURL, email, token string, repo pr.Repo) *Client {
-	return &Client{http: &http.Client{Timeout: 60 * time.Second}, baseURL: strings.TrimSuffix(baseURL, "/"), email: email, token: token, repo: repo}
+	hc := &http.Client{Timeout: 60 * time.Second, CheckRedirect: checkRedirect}
+	return &Client{http: hc, baseURL: strings.TrimSuffix(baseURL, "/"), email: email, token: token, repo: repo}
+}
+
+// maxRedirects is net/http's own cap, which a CheckRedirect replaces.
+const maxRedirects = 10
+
+// checkRedirect refuses to follow a write: net/http re-sends a redirected
+// POST as a GET without its body, and the GET's 200 would pass for success.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if orig := via[0]; orig.Method != http.MethodGet {
+		return fmt.Errorf("refusing to follow a redirect of %s %s to %s", orig.Method, orig.URL, req.URL)
+	}
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	return nil
 }
 
 // ---- wire types: Bitbucket JSON field names stay in this file ----
@@ -108,6 +125,10 @@ type participantDTO struct {
 
 var decisions = map[string]pr.Decision{"approved": pr.Approve, "changes_requested": pr.RequestChanges}
 
+type idDTO struct {
+	ID int64 `json:"id"`
+}
+
 type commentDTO struct {
 	ID      int64 `json:"id"`
 	Content struct {
@@ -117,10 +138,8 @@ type commentDTO struct {
 	CreatedOn time.Time `json:"created_on"`
 	Deleted   bool      `json:"deleted"`
 	Pending   bool      `json:"pending"`
-	Parent    *struct {
-		ID int64 `json:"id"`
-	} `json:"parent"`
-	Inline *struct {
+	Parent    *idDTO    `json:"parent"`
+	Inline    *struct {
 		Path      string `json:"path"`
 		From      *int   `json:"from"`
 		To        *int   `json:"to"`
@@ -163,6 +182,40 @@ func (d commentDTO) toDomain() (pr.Comment, error) {
 		c.Anchor = a
 	}
 	return c, nil
+}
+
+type newCommentDTO struct {
+	Content struct {
+		Raw string `json:"raw"`
+	} `json:"content"`
+	Inline *newInlineDTO `json:"inline,omitempty"`
+	Parent *idDTO        `json:"parent,omitempty"`
+}
+
+type newInlineDTO struct {
+	Path string `json:"path"`
+	From *int   `json:"from,omitempty"`
+	To   *int   `json:"to,omitempty"`
+}
+
+func newInline(a pr.Anchor) (*newInlineDTO, error) {
+	if a.StartLine != 0 {
+		return nil, fmt.Errorf("a comment on a range of lines is not supported on Bitbucket: %+v", a)
+	}
+	in := &newInlineDTO{Path: a.Path}
+	if a.Line == 0 {
+		return in, nil
+	}
+	line := a.Line
+	switch a.Side {
+	case diff.Head:
+		in.To = &line
+	case diff.Base:
+		in.From = &line
+	default:
+		return nil, fmt.Errorf("comment anchor has no valid side: %+v", a)
+	}
+	return in, nil
 }
 
 type page[T any] struct {
@@ -244,7 +297,7 @@ func (c *Client) Get(ctx context.Context, number int) (*pr.PR, error) {
 // Authorization header, which it keeps on a redirect to the same host or one
 // of its subdomains and drops otherwise.
 func (c *Client) Diff(ctx context.Context, number int) (string, error) {
-	body, err := c.do(ctx, c.baseURL+c.pullRequestPath(number, "/diff"))
+	body, err := c.do(ctx, http.MethodGet, c.baseURL+c.pullRequestPath(number, "/diff"), nil)
 	return string(body), err
 }
 
@@ -268,6 +321,62 @@ func (c *Client) Comments(ctx context.Context, number int) ([]pr.Comment, error)
 		out = append(out, cm)
 	}
 	return out, nil
+}
+
+// ---- writes ----
+
+var verdictPaths = map[pr.Decision]string{pr.Approve: "/approve", pr.RequestChanges: "/request-changes"}
+
+// SubmitVerdict posts a message as a comment on the pull request before the
+// verdict, because Bitbucket's verdict endpoints take no message.
+func (c *Client) SubmitVerdict(ctx context.Context, number int, decision pr.Decision, message string) error {
+	path, ok := verdictPaths[decision]
+	if !ok {
+		return fmt.Errorf("unknown decision %q", decision)
+	}
+	if strings.TrimSpace(message) == "" {
+		_, err := c.do(ctx, http.MethodPost, c.baseURL+c.pullRequestPath(number, path), nil)
+		return err
+	}
+	if err := c.PostComment(ctx, number, pr.NewComment{Body: message}); err != nil {
+		return err
+	}
+	if _, err := c.do(ctx, http.MethodPost, c.baseURL+c.pullRequestPath(number, path), nil); err != nil {
+		return fmt.Errorf("the comment was posted, but the verdict failed: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) PostComment(ctx context.Context, number int, nc pr.NewComment) error {
+	var d newCommentDTO
+	d.Content.Raw = nc.Body
+	if nc.Anchor != nil {
+		in, err := newInline(*nc.Anchor)
+		if err != nil {
+			return err
+		}
+		d.Inline = in
+	}
+	return c.postComment(ctx, number, d)
+}
+
+// Reply sends parent.ID, not ReplyTo: Bitbucket nests a reply under the
+// comment it answers, where GitHub threads every reply under the root.
+func (c *Client) Reply(ctx context.Context, number int, parent pr.Comment, body string) error {
+	var d newCommentDTO
+	d.Content.Raw = body
+	d.Parent = &idDTO{ID: parent.ID}
+	return c.postComment(ctx, number, d)
+}
+
+func (c *Client) DeleteComment(ctx context.Context, number int, cm pr.Comment) error {
+	_, err := c.do(ctx, http.MethodDelete, c.baseURL+c.pullRequestPath(number, "/comments/"+strconv.FormatInt(cm.ID, 10)), nil)
+	return err
+}
+
+func (c *Client) postComment(ctx context.Context, number int, d newCommentDTO) error {
+	_, err := c.do(ctx, http.MethodPost, c.baseURL+c.pullRequestPath(number, "/comments"), d)
+	return err
 }
 
 // ---- HTTP ----
@@ -310,7 +419,7 @@ func getAll[T any](ctx context.Context, c *Client, path string, query url.Values
 
 // get decodes the JSON at an absolute URL into v.
 func (c *Client) get(ctx context.Context, rawURL string, v any) error {
-	body, err := c.do(ctx, rawURL)
+	body, err := c.do(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err
 	}
@@ -320,10 +429,21 @@ func (c *Client) get(ctx context.Context, rawURL string, v any) error {
 	return nil
 }
 
-func (c *Client) do(ctx context.Context, rawURL string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+func (c *Client) do(ctx context.Context, method, rawURL string, payload any) ([]byte, error) {
+	var reqBody io.Reader
+	if payload != nil {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("encode %s %s: %w", method, rawURL, err)
+		}
+		reqBody = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, reqBody)
 	if err != nil {
 		return nil, err
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.SetBasicAuth(c.email, c.token)
 	resp, err := c.http.Do(req)
@@ -343,7 +463,7 @@ func (c *Client) do(ctx context.Context, rawURL string) ([]byte, error) {
 		}
 		// The reason first: callers show this on one line cut to the terminal
 		// width, and the URL can be long.
-		return nil, fmt.Errorf("%s (%d GET %s)", msg, resp.StatusCode, rawURL)
+		return nil, fmt.Errorf("%s (%d %s %s)", msg, resp.StatusCode, method, rawURL)
 	}
 	return body, nil
 }

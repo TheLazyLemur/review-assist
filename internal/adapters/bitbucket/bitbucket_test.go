@@ -3,7 +3,10 @@ package bitbucket_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -715,6 +718,297 @@ func TestCommentsRejectARangeStartWithNoEndLine(t *testing.T) {
 	// then
 	// ... it fails naming the comment
 	if err == nil || !strings.Contains(err.Error(), "42") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+type sentRequest struct {
+	Method      string
+	Path        string
+	ContentType string
+	Body        map[string]any
+}
+
+// record serves every request with status and keeps what was sent.
+func record(t *testing.T, status func(r *http.Request) int) (*bitbucket.Client, *[]sentRequest) {
+	t.Helper()
+	var sent []sentRequest
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		s := sentRequest{Method: r.Method, Path: r.URL.Path, ContentType: r.Header.Get("Content-Type")}
+		if err := json.NewDecoder(r.Body).Decode(&s.Body); err != nil && !errors.Is(err, io.EOF) {
+			t.Errorf("decode %s %s: %v", r.Method, r.URL.Path, err)
+		}
+		sent = append(sent, s)
+		w.WriteHeader(status(r))
+	})
+	return bitbucket.NewClient(srv.URL, "e", "t", repo), &sent
+}
+
+func accept(*http.Request) int { return http.StatusOK }
+
+func TestPostCommentOnThePullRequestHasNoInline(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... a comment without an anchor is posted
+	err := c.PostComment(context.Background(), 7, pr.NewComment{Body: "Looks good"})
+
+	// then
+	// ... it posts only the content to the comments of the pull request
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{{Method: "POST", Path: prPath + "/comments", ContentType: "application/json", Body: map[string]any{
+		"content": map[string]any{"raw": "Looks good"},
+	}}}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestPostCommentOnAFileSendsThePathAndNoLine(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... a comment anchored on a file is posted
+	err := c.PostComment(context.Background(), 7, pr.NewComment{Body: "Split this", Anchor: &pr.Anchor{Path: "a.go"}, HeadSHA: "a1b2"})
+
+	// then
+	// ... inline has the path and no line
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{{Method: "POST", Path: prPath + "/comments", ContentType: "application/json", Body: map[string]any{
+		"content": map[string]any{"raw": "Split this"},
+		"inline":  map[string]any{"path": "a.go"},
+	}}}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestPostCommentOnAHeadLineSendsTo(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... a comment on line 12 of the head side is posted
+	err := c.PostComment(context.Background(), 7, pr.NewComment{Body: "Off by one", Anchor: &pr.Anchor{Path: "a.go", Line: 12, Side: diff.Head}, HeadSHA: "a1b2"})
+
+	// then
+	// ... inline.to is the line
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{{Method: "POST", Path: prPath + "/comments", ContentType: "application/json", Body: map[string]any{
+		"content": map[string]any{"raw": "Off by one"},
+		"inline":  map[string]any{"path": "a.go", "to": float64(12)},
+	}}}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestPostCommentOnABaseLineSendsFrom(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... a comment on line 8 of the base side is posted
+	err := c.PostComment(context.Background(), 7, pr.NewComment{Body: "Why remove this?", Anchor: &pr.Anchor{Path: "a.go", Line: 8, Side: diff.Base}, HeadSHA: "a1b2"})
+
+	// then
+	// ... inline.from is the line
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{{Method: "POST", Path: prPath + "/comments", ContentType: "application/json", Body: map[string]any{
+		"content": map[string]any{"raw": "Why remove this?"},
+		"inline":  map[string]any{"path": "a.go", "from": float64(8)},
+	}}}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestPostCommentOnARangeFailsWithoutARequest(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... a comment on lines 3 to 9 of the head side is posted
+	err := c.PostComment(context.Background(), 7, pr.NewComment{Body: "All of this", HeadSHA: "a1b2",
+		Anchor: &pr.Anchor{Path: "a.go", Line: 9, Side: diff.Head, StartLine: 3, StartSide: diff.Head}})
+
+	// then
+	// ... it fails naming ranges and sends nothing
+	if err == nil || !strings.Contains(err.Error(), "range") {
+		t.Fatalf("got %v", err)
+	}
+	if len(*sent) != 0 {
+		t.Errorf("want no requests, got %+v", *sent)
+	}
+}
+
+func TestReplyToAReplySendsTheCommentsOwnIDAsParent(t *testing.T) {
+	// given
+	// ... a server that records requests, and comment 5 that replies to comment 2
+	c, sent := record(t, accept)
+	parent := pr.Comment{ID: 5, ReplyTo: 2, Body: "Agreed"}
+
+	// when
+	// ... a reply to comment 5 is posted
+	err := c.Reply(context.Background(), 7, parent, "Done")
+
+	// then
+	// ... parent.id is 5, not 2
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{{Method: "POST", Path: prPath + "/comments", ContentType: "application/json", Body: map[string]any{
+		"content": map[string]any{"raw": "Done"},
+		"parent":  map[string]any{"id": float64(5)},
+	}}}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestDeleteCommentSendsADeleteToItsURL(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... comment 42 is deleted
+	err := c.DeleteComment(context.Background(), 7, pr.Comment{ID: 42})
+
+	// then
+	// ... the request is a DELETE to that comment
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{{Method: "DELETE", Path: prPath + "/comments/42"}}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestApproveWithNoMessageSendsOnlyTheApproval(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... the pull request is approved with no message
+	err := c.SubmitVerdict(context.Background(), 7, pr.Approve, "")
+
+	// then
+	// ... only the approve request is sent
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{{Method: "POST", Path: prPath + "/approve"}}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestRequestChangesSendsTheRequestChangesRequest(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... changes are requested with no message
+	err := c.SubmitVerdict(context.Background(), 7, pr.RequestChanges, "")
+
+	// then
+	// ... the request-changes request is sent
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{{Method: "POST", Path: prPath + "/request-changes"}}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestVerdictWithAMessagePostsTheCommentFirst(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... changes are requested with a message
+	err := c.SubmitVerdict(context.Background(), 7, pr.RequestChanges, "Needs tests")
+
+	// then
+	// ... the message is posted as a comment on the pull request, then the verdict
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{
+		{Method: "POST", Path: prPath + "/comments", ContentType: "application/json", Body: map[string]any{"content": map[string]any{"raw": "Needs tests"}}},
+		{Method: "POST", Path: prPath + "/request-changes"},
+	}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestVerdictThatFailsAfterItsMessageSaysTheCommentWasPosted(t *testing.T) {
+	// given
+	// ... a server that accepts comments and refuses the approval
+	c, sent := record(t, func(r *http.Request) int {
+		if strings.HasSuffix(r.URL.Path, "/approve") {
+			return http.StatusBadRequest
+		}
+		return http.StatusOK
+	})
+
+	// when
+	// ... the pull request is approved with a message
+	err := c.SubmitVerdict(context.Background(), 7, pr.Approve, "Nice work")
+
+	// then
+	// ... the comment and then the approval were sent, and the error says the comment was posted and keeps Bitbucket's reason
+	if err == nil || !strings.Contains(err.Error(), "comment was posted") || !strings.Contains(err.Error(), "Bad Request") {
+		t.Fatalf("got %v", err)
+	}
+	want := []sentRequest{
+		{Method: "POST", Path: prPath + "/comments", ContentType: "application/json", Body: map[string]any{"content": map[string]any{"raw": "Nice work"}}},
+		{Method: "POST", Path: prPath + "/approve"},
+	}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestPostCommentFailsWhenThePostIsRedirected(t *testing.T) {
+	// given
+	// ... a server that redirects the comments POST to a URL that answers GET with 200
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == prPath+"/comments" {
+			http.Redirect(w, r, "/moved", http.StatusFound)
+		}
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+
+	// when
+	// ... a comment is posted
+	err := c.PostComment(context.Background(), 7, pr.NewComment{Body: "Looks good"})
+
+	// then
+	// ... it fails naming the method rather than reporting a comment that was never posted
+	if err == nil || !strings.Contains(err.Error(), "POST") {
 		t.Fatalf("got %v", err)
 	}
 }
