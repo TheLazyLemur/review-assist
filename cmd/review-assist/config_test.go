@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -121,4 +124,58 @@ func TestInitWritesAPrivateClaudeCodeConfigOnce(t *testing.T) {
 	}
 	cfg, _ = parseConfig(nil, func(string) string { return "" }, path)
 	assertEqual(t, "sk-ant-oat01-abc", cfg.claude.Token)
+}
+
+func TestExampleConfigShowsEveryOptionAndLoads(t *testing.T) {
+	// given
+	// ... a stale example file from an older version
+	path := filepath.Join(t.TempDir(), "review-assist", "config.example.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"old": true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// when
+	// ... the example is written
+	err := writeExampleConfig(path)
+
+	// then
+	// ... it replaces the stale file and loads through the config loader
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg config
+	if err := loadConfigFile(path, &cfg); err != nil {
+		t.Fatalf("example does not load: %v", err)
+	}
+
+	// ... and it sets every option the loader knows
+	data, _ := os.ReadFile(path)
+	var fc fileConfig
+	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&fc); err != nil {
+		t.Fatal(err)
+	}
+	for _, missing := range unsetFields(reflect.ValueOf(fc), "") {
+		t.Errorf("example leaves out %s", missing)
+	}
+}
+
+// unsetFields lists nil pointer fields, by JSON key path.
+func unsetFields(v reflect.Value, prefix string) []string {
+	var out []string
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Type().Field(i)
+		key := prefix + f.Tag.Get("json")
+		switch fv := v.Field(i); fv.Kind() {
+		case reflect.Pointer:
+			if fv.IsNil() {
+				out = append(out, key)
+			}
+		case reflect.Struct:
+			out = append(out, unsetFields(fv, key+".")...)
+		}
+	}
+	return out
 }

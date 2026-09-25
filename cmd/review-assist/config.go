@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 )
 
-// fileConfig is config.json. Pointers tell "not set" apart from zero values,
-// so a file only overrides what it names.
+// Pointers tell "not set" apart from zero values, so a file only overrides
+// what it names.
 type fileConfig struct {
 	Backend   *string `json:"backend"`
 	Anthropic struct {
@@ -33,9 +33,6 @@ type fileConfig struct {
 	} `json:"review"`
 }
 
-// configPath is ~/.config/review-assist/config.json on macOS, Linux and other
-// unix-likes (or $XDG_CONFIG_HOME/review-assist/config.json), and the OS
-// config dir elsewhere (%AppData% on Windows). userConfigDir is os.UserConfigDir.
 func configPath(goos, home, xdgConfigHome, userConfigDir string) string {
 	base := userConfigDir
 	switch {
@@ -50,7 +47,7 @@ func configPath(goos, home, xdgConfigHome, userConfigDir string) string {
 	return filepath.Join(base, "review-assist", "config.json")
 }
 
-// loadConfigFile applies the file at path to cfg. A missing file is fine.
+// A missing file is fine.
 func loadConfigFile(path string, cfg *config) error {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {

@@ -15,12 +15,15 @@ import (
 	"golang.org/x/term"
 )
 
-// runInit writes a first config file that uses the Claude Code backend. It
-// asks for a token from `claude setup-token`; an empty answer runs that
-// command first. It never overwrites an existing file.
 func runInit(path string) error {
+	example := filepath.Join(filepath.Dir(path), "config.example.json")
+	if err := writeExampleConfig(example); err != nil {
+		return err
+	}
+	fmt.Printf("Wrote %s: every option, for reference.\n", example)
 	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("%s already exists: edit it, or delete it and run --init again", path)
+		fmt.Printf("%s already exists. It is unchanged.\n", path)
+		return nil
 	}
 	fmt.Printf("review-assist will write %s with the claude-code backend.\n\n", path)
 	fmt.Println("Paste a token from `claude setup-token`, or press enter to run it now.")
@@ -49,7 +52,6 @@ func runInit(path string) error {
 	return nil
 }
 
-// readSecret reads one line without echo when stdin is a terminal.
 func readSecret(prompt string) (string, error) {
 	fmt.Print(prompt)
 	fd := int(os.Stdin.Fd())
@@ -65,15 +67,11 @@ func readSecret(prompt string) (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
-// writeInitConfig creates the config file for the claude-code backend. The
-// directory is created 0700 and the file 0600, and an existing file is left
-// alone.
 func writeInitConfig(path, token string) error {
 	if token == "" {
 		panic("writeInitConfig: empty token")
 	}
-	// Only the keys init sets, so the file is short to edit by hand. The keys
-	// match fileConfig; the test loads the result back through it.
+	// Only the keys init sets. The test loads the result back through fileConfig.
 	data, err := json.MarshalIndent(map[string]any{
 		"backend":     backendClaudeCode,
 		"claude_code": map[string]any{"token": token},
@@ -97,3 +95,34 @@ func writeInitConfig(path, token string) error {
 	}
 	return f.Close()
 }
+
+// writeExampleConfig always overwrites: the example is documentation and must
+// match this version. The token is left empty on purpose.
+func writeExampleConfig(path string) error {
+	var fc fileConfig
+	fc.Backend = ptr(backendClaudeCode)
+	fc.Anthropic.BaseURL = ptr("http://localhost:11434")
+	fc.Anthropic.APIKey = ptr("ollama")
+	fc.Anthropic.Model = ptr(defaultAnthropicModel)
+	fc.Anthropic.Think = ptr(false)
+	fc.Anthropic.Log = ptr("")
+	fc.ClaudeCode.Token = ptr("")
+	fc.ClaudeCode.Model = ptr("sonnet")
+	fc.ClaudeCode.Effort = ptr("medium")
+	fc.ClaudeCode.Executable = ptr("claude")
+	fc.Review.Concurrency = ptr(4)
+	fc.Review.MaxTurns = ptr(40)
+	data, err := json.MarshalIndent(fc, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write example config: %w", err)
+	}
+	return nil
+}
+
+func ptr[T any](v T) *T { return &v }

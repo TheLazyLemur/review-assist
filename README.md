@@ -27,6 +27,10 @@ enter and it runs `claude setup-token` for you. The token is read without echo.
 The file is created readable by you only, and `--init` never overwrites an
 existing file.
 
+`--init` also writes `config.example.json` next to the config file. It sets
+every option, so use it as a reference. `--init` rewrites it on every run, so
+it always matches the installed version. Its token is empty.
+
 ## Settings
 
 Each setting can come from the config file, an environment variable or a flag.

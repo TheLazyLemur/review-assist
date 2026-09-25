@@ -1,6 +1,5 @@
-// Package claudecode implements review.Agent with the claude CLI (Claude
-// Code), driven through pi-claude. Claude runs its own agent loop and calls
-// the task's tools, which are the only tools it gets.
+// Package claudecode implements review.Agent with the claude CLI, through
+// pi-claude.
 //
 // claude runs in bare mode (CLAUDE_CODE_SIMPLE=1, what --bare sets) and logs
 // in with a `claude setup-token` token passed as ANTHROPIC_AUTH_TOKEN. Bare
@@ -58,7 +57,6 @@ func (a *Agent) Run(ctx context.Context, task review.Task) error {
 	if turn.IsError {
 		return fmt.Errorf("claude: %s %v", turn.Subtype, turn.Errors)
 	}
-	// claude ended its turn without finishing. Remind once.
 	turn, err = sess.Prompt(ctx, fmt.Sprintf("You must finish by calling the %s tool. Do not answer in prose.", task.FinishTool))
 	if err != nil || task.Done() {
 		return err
@@ -69,9 +67,7 @@ func (a *Agent) Run(ctx context.Context, task review.Task) error {
 	return nil
 }
 
-// options locks the session down: bare mode on the token, inherited Anthropic
-// settings blanked, no built-in tools, no settings files, no MCP servers, no
-// saved session. The task's tools are all claude can call.
+// The task's tools must be the only tools claude can call.
 func (a *Agent) options(task review.Task) pi.Options {
 	tools := make([]pi.Tool, 0, len(task.Tools))
 	for _, t := range task.Tools {

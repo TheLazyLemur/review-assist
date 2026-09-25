@@ -9,7 +9,6 @@ import (
 	"sync"
 )
 
-// EventKind describes agent progress for the UI.
 type EventKind int
 
 const (
@@ -27,8 +26,7 @@ type Event struct {
 
 var errNoSubmission = errors.New("agent finished without calling submit_findings")
 
-// runAgent runs one agent on the Agent port and returns its submission. The
-// agent gets the workspace's read tools and submit_findings, nothing else.
+// The agent gets the read tools and submit_findings, nothing else.
 func (r *Reviewer) runAgent(ctx context.Context, ws *Workspace, name, system, prompt string, emit func(Event)) (submission, error) {
 	var (
 		mu        sync.Mutex

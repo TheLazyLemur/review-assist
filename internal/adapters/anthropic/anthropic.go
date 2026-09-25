@@ -22,12 +22,10 @@ type Config struct {
 	// Think leaves the model's extended thinking on. Off by default: agents
 	// reason through their tool calls, and thinking multiplies turn latency.
 	Think bool
-	// LogPath, when set, receives one line per model call (timing, tokens).
+	// LogPath gets one line per model call (timing, tokens).
 	LogPath string
 }
 
-// Agent runs tasks by looping over the Messages API itself: send, run the
-// tool calls, send the results, until the task is done.
 type Agent struct {
 	cfg    Config
 	client sdk.Client

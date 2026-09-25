@@ -39,7 +39,6 @@ type config struct {
 	target      string // optional PR argument
 }
 
-// agent builds the chosen backend and names its model for the UI.
 func (c config) agent(cacheDir string) (review.Agent, string, error) {
 	switch c.backend {
 	case backendAnthropic:
@@ -60,8 +59,7 @@ func (c config) agent(cacheDir string) (review.Agent, string, error) {
 	}
 }
 
-// run is the composition root: it reads configuration, builds the adapters,
-// connects them to the core, and starts the TUI.
+// run is the composition root.
 func run(args []string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -114,10 +112,8 @@ func run(args []string) error {
 	return err
 }
 
-// parseConfig layers settings: defaults, then the config file, then
-// REVIEW_ASSIST_* env vars, then flags. The last one set wins. OLLAMA_HOST and
-// ANTHROPIC_API_KEY are shared with other tools, so they only replace the
-// built-in defaults and never override the file.
+// OLLAMA_HOST and ANTHROPIC_API_KEY are shared with other tools, so they only
+// replace the built-in defaults and never override the config file.
 func parseConfig(args []string, getenv func(string) string, configFile string) (config, error) {
 	cfg := config{
 		backend: backendAnthropic,
@@ -219,8 +215,6 @@ func normaliseBaseURL(u string) string {
 	return strings.TrimSuffix(u, "/")
 }
 
-// resolveTarget works out which repository to use and which PR, if any, to
-// open first. localRepo is true when the cwd is a checkout of that repository.
 func resolveTarget(ctx context.Context, runner github.Runner, target string) (repo pr.Repo, openPR int, localRepo bool, err error) {
 	local, localErr := github.Detect(ctx, runner)
 	if target == "" {
