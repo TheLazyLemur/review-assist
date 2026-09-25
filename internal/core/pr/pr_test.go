@@ -58,9 +58,12 @@ func TestParseRefPutsBitbucketOrgOnTheBitbucketPlatform(t *testing.T) {
 // recordingHost records posts. Other CodeHost methods are not reached.
 type recordingHost struct {
 	pr.CodeHost
-	verdicts []pr.Decision
-	comments []string
+	acceptsVerdictFromAuthor bool
+	verdicts                 []pr.Decision
+	comments                 []string
 }
+
+func (h *recordingHost) AcceptsVerdictFromAuthor() bool { return h.acceptsVerdictFromAuthor }
 
 func (h *recordingHost) SubmitVerdict(_ context.Context, _ int, d pr.Decision, _ string) error {
 	h.verdicts = append(h.verdicts, d)
@@ -72,11 +75,13 @@ func (h *recordingHost) PostComment(_ context.Context, _ int, c pr.NewComment) e
 	return nil
 }
 
-func TestVerdictOnYourOwnGitHubPRPostsAsAHeadedComment(t *testing.T) {
+var ownPRRepo = pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "o", Name: "r"}
+
+func TestVerdictOnYourOwnPRPostsAsAHeadedCommentWhenTheHostRefusesIt(t *testing.T) {
 	// given
-	// ... a GitHub PR opened by the viewer (logins differ only in case), and one opened by someone else
-	host := &recordingHost{}
-	svc := pr.NewService(host, pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "o", Name: "r"})
+	// ... a host that refuses a verdict from the author, a PR opened by the viewer (logins differ only in case), and one opened by someone else
+	host := &recordingHost{acceptsVerdictFromAuthor: false}
+	svc := pr.NewService(host, ownPRRepo)
 	own := &pr.PR{Summary: pr.Summary{Number: 1, Author: "TheLazyLemur"}}
 	other := &pr.PR{Summary: pr.Summary{Number: 2, Author: "someone"}}
 	ctx := context.Background()
@@ -111,11 +116,11 @@ func TestVerdictOnYourOwnGitHubPRPostsAsAHeadedComment(t *testing.T) {
 	}
 }
 
-func TestVerdictOnYourOwnBitbucketPRIsSentAsAVerdict(t *testing.T) {
+func TestVerdictOnYourOwnPRIsSentWhenTheHostAcceptsIt(t *testing.T) {
 	// given
-	// ... a Bitbucket PR opened by the viewer
-	host := &recordingHost{}
-	svc := pr.NewService(host, pr.Repo{Platform: pr.Bitbucket, Hostname: "bitbucket.org", Owner: "o", Name: "r"})
+	// ... a host that accepts a verdict from the author, and a PR opened by the viewer
+	host := &recordingHost{acceptsVerdictFromAuthor: true}
+	svc := pr.NewService(host, ownPRRepo)
 	own := &pr.PR{Summary: pr.Summary{Number: 1, Author: "TheLazyLemur"}}
 	ctx := context.Background()
 

@@ -16,6 +16,9 @@ type CodeHost interface {
 	Comments(ctx context.Context, number int) ([]Comment, error)
 	Viewer(ctx context.Context) (string, error)
 
+	// AcceptsVerdictFromAuthor reports whether the code host records a
+	// verdict from the pull request's author (ADR 0003).
+	AcceptsVerdictFromAuthor() bool
 	SubmitVerdict(ctx context.Context, number int, decision Decision, message string) error
 	PostComment(ctx context.Context, number int, c NewComment) error
 	Reply(ctx context.Context, number int, parent Comment, body string) error
@@ -88,11 +91,11 @@ func IsOwn(author, viewer string) bool {
 }
 
 // VerdictPostsAsComment reports whether SubmitVerdict posts a comment headed
-// with the verdict instead of the verdict. It does on the viewer's own GitHub
-// pull request: GitHub refuses a verdict from the author, but the author still
-// reviews code an agent wrote. Bitbucket accepts one (ADR 0003).
+// with the verdict instead of the verdict. It does on the viewer's own pull
+// request when the code host refuses a verdict from the author: the author
+// still reviews code an agent wrote.
 func (s *Service) VerdictPostsAsComment(p *PR, viewer string) bool {
-	return s.repo.Platform == GitHub && IsOwn(p.Author, viewer)
+	return !s.host.AcceptsVerdictFromAuthor() && IsOwn(p.Author, viewer)
 }
 
 // SubmitVerdict posts a verdict, or a comment headed with it when

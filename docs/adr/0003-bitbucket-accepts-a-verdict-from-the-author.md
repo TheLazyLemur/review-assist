@@ -5,7 +5,9 @@ instead of the verdict, because GitHub refuses one from the author: its API
 answers `Can not approve your own pull request` and `Can not request changes
 on your own pull request`. Bitbucket Cloud does not refuse. So the own-PR rule
 applies on GitHub only; on Bitbucket the verdict is sent, and the pull request
-shows the approval or the request for changes.
+shows the approval or the request for changes. The code host reports this
+through the port (`AcceptsVerdictFromAuthor`), so the core stays blind to the
+platform, as ADR 0002 requires.
 
 Checked on 2026-09-25 in a throwaway repository, as the account that opened
 the pull request:

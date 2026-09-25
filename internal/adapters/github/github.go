@@ -435,6 +435,10 @@ func (c *Client) Checkout(ctx context.Context, number int) error {
 	return err
 }
 
+// AcceptsVerdictFromAuthor is false: GitHub answers "Can not approve your
+// own pull request" (ADR 0003).
+func (c *Client) AcceptsVerdictFromAuthor() bool { return false }
+
 func (c *Client) OpenInBrowser(ctx context.Context, number int) error {
 	_, err := c.gh(ctx, nil, "pr", "view", strconv.Itoa(number), "--web")
 	return err

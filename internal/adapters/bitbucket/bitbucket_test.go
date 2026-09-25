@@ -1622,3 +1622,19 @@ func TestOpenInBrowserOpensThePullRequestOnBitbucket(t *testing.T) {
 		t.Errorf("want %v, got %v", want, opened)
 	}
 }
+
+func TestBitbucketAcceptsAVerdictFromTheAuthor(t *testing.T) {
+	// given
+	// ... a Bitbucket client
+	c := bitbucket.NewClient("http://unused", "e", "t", repo, bitbucket.Options{})
+
+	// when
+	// ... it is asked whether it records a verdict from the author
+	accepts := c.AcceptsVerdictFromAuthor()
+
+	// then
+	// ... it does
+	if !accepts {
+		t.Error("Bitbucket client says it refuses a verdict from the author")
+	}
+}
