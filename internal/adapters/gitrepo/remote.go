@@ -127,13 +127,25 @@ func refusal(reason string, remotes []listed) error {
 }
 
 // shownURL is HOSTNAME/OWNER/NAME as parsed, so an SSH host alias shows up as
-// the hostname review-assist saw, or the raw URL when it does not parse.
+// the hostname review-assist saw, or the raw URL when it does not parse. The
+// raw URL loses any user and password, since a remote URL may carry a token.
 func shownURL(raw string) string {
 	hostname, owner, name, ok := parseRemoteURL(raw)
-	if !ok {
+	if ok {
+		return hostname + "/" + owner + "/" + name
+	}
+	scheme, rest, found := strings.Cut(raw, "://")
+	if !found {
 		return raw
 	}
-	return hostname + "/" + owner + "/" + name
+	// Cut by hand rather than with url.Parse, which would leave a URL it
+	// rejects, token and all, to be printed as it is.
+	end := strings.Index(rest, "/")
+	if end < 0 {
+		end = len(rest)
+	}
+	authority := rest[:end]
+	return scheme + "://" + authority[strings.LastIndex(authority, "@")+1:] + rest[end:]
 }
 
 // lookUp is false for a remote that is not on a supported code host.

@@ -103,6 +103,10 @@ func TestPickRemote(t *testing.T) {
   origin  github-work/TheLazyLemur/review-assist`,
 		},
 		{
+			name: "no remotes at all",
+			err:  "no git remote points at a supported code host (GitHub, Bitbucket)",
+		},
+		{
 			name:    "github.com is GitHub",
 			remotes: []remote{{"origin", "github.com", "TheLazyLemur/review-assist"}},
 			want:    pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "TheLazyLemur", Name: "review-assist"},
@@ -202,21 +206,34 @@ func TestPickRemoteDoesNotLookUpRemotesTheRuleDoesNotReach(t *testing.T) {
 
 func TestNoCodeHostRefusalShowsARemoteItCannotParseByItsURL(t *testing.T) {
 	// given
-	// ... a remote on a local path, and no remotes at all
+	// ... a remote on a local path
 	remotes := []gitrepo.Remote{{Name: "backup", URL: "/srv/git/app.git"}}
 
 	// when
-	// ... the remote is picked from each
+	// ... the remote is picked
 	_, err := gitrepo.PickRemote(remotes, "", fakePlatforms)
-	_, noneErr := gitrepo.PickRemote(nil, "", fakePlatforms)
 
 	// then
-	// ... the local path is listed as it is, and with no remotes only the first line is printed
+	// ... the local path is listed as it is
 	want := "no git remote points at a supported code host (GitHub, Bitbucket)\n  backup  /srv/git/app.git"
 	if errText(err) != want {
 		t.Errorf("want %q, got %q", want, errText(err))
 	}
-	if errText(noneErr) != "no git remote points at a supported code host (GitHub, Bitbucket)" {
-		t.Errorf("no remotes: got %q", errText(noneErr))
+}
+
+func TestNoCodeHostRefusalLeavesOutCredentialsInAURL(t *testing.T) {
+	// given
+	// ... a remote whose URL carries a token and does not parse as owner/name
+	remotes := []gitrepo.Remote{{Name: "origin", URL: "https://user:secret@example.com/a/b/c"}}
+
+	// when
+	// ... the remote is picked
+	_, err := gitrepo.PickRemote(remotes, "", fakePlatforms)
+
+	// then
+	// ... the URL is listed without its user or token
+	want := "no git remote points at a supported code host (GitHub, Bitbucket)\n  origin  https://example.com/a/b/c"
+	if errText(err) != want {
+		t.Errorf("want %q, got %q", want, errText(err))
 	}
 }
