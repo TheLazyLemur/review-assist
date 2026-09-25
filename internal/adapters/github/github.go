@@ -70,7 +70,7 @@ func Platforms(ctx context.Context, run Runner) func(hostname string) (pr.Platfo
 		once.Do(func() {
 			out, err := run.Run(ctx, nil, "gh", "auth", "status", "--json", "hosts")
 			if err != nil {
-				ghErr = fmt.Errorf("gh auth status: %w", err)
+				ghErr = err
 				return
 			}
 			var v struct{ Hosts map[string]json.RawMessage }

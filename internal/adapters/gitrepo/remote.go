@@ -72,32 +72,33 @@ func (r *Repo) trackedRemote(ctx context.Context) (string, error) {
 // PickRemote applies the rule for the remote in CONTEXT.md: the first of the
 // tracked remote, origin, and the only remote on a supported code host.
 // remotes are in `git remote` order, which the refusal keeps. tracked is ""
-// when the current branch tracks nothing.
+// when the current branch tracks nothing. A hostname is looked up only when the
+// rule reaches its remote, so a broken lookup for a remote the rule never needs
+// does not stop it.
 func PickRemote(remotes []Remote, tracked string, platformOf PlatformOf) (pr.Repo, error) {
+	for _, want := range []string{tracked, "origin"} {
+		for _, r := range remotes {
+			if r.Name != want {
+				continue
+			}
+			repo, ok, err := lookUp(r, platformOf)
+			if err != nil || ok {
+				return repo, err
+			}
+		}
+	}
 	type candidate struct {
 		remote string
 		repo   pr.Repo
 	}
 	var candidates []candidate
 	for _, r := range remotes {
-		hostname, owner, name, ok := parseRemoteURL(r.URL)
-		if !ok {
-			continue
-		}
-		platform, ok, err := platformOf(hostname)
+		repo, ok, err := lookUp(r, platformOf)
 		if err != nil {
-			return pr.Repo{}, fmt.Errorf("%s: %w", hostname, err)
+			return pr.Repo{}, err
 		}
-		if !ok {
-			continue
-		}
-		candidates = append(candidates, candidate{r.Name, pr.Repo{Platform: platform, Hostname: hostname, Owner: owner, Name: name}})
-	}
-	for _, want := range []string{tracked, "origin"} {
-		for _, c := range candidates {
-			if c.remote == want {
-				return c.repo, nil
-			}
+		if ok {
+			candidates = append(candidates, candidate{r.Name, repo})
 		}
 	}
 	switch len(candidates) {
@@ -116,6 +117,22 @@ func PickRemote(remotes []Remote, tracked string, platformOf PlatformOf) (pr.Rep
 		fmt.Fprintf(&b, "\n  %-*s  %s", width, c.remote, c.repo.Qualified())
 	}
 	return pr.Repo{}, errors.New(b.String())
+}
+
+// lookUp is false for a remote that is not on a supported code host.
+func lookUp(r Remote, platformOf PlatformOf) (pr.Repo, bool, error) {
+	hostname, owner, name, ok := parseRemoteURL(r.URL)
+	if !ok {
+		return pr.Repo{}, false, nil
+	}
+	platform, ok, err := platformOf(hostname)
+	if err != nil {
+		return pr.Repo{}, false, fmt.Errorf("%s: %w", hostname, err)
+	}
+	if !ok {
+		return pr.Repo{}, false, nil
+	}
+	return pr.Repo{Platform: platform, Hostname: hostname, Owner: owner, Name: name}, true, nil
 }
 
 // parseRemoteURL reads git@host:owner/name.git, ssh://git@host:port/owner/name.git

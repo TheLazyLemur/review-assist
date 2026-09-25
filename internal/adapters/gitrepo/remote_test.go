@@ -145,7 +145,9 @@ func TestPickRemoteReportsAFailedPlatformLookupWithItsHostname(t *testing.T) {
 	// given
 	// ... a remote on a hostname whose platform lookup fails
 	remotes := []gitrepo.Remote{{Name: "origin", URL: "git@ghe.example.com:acme/widgets.git"}}
-	failing := func(string) (pr.Platform, bool, error) { return "", false, errors.New("gh auth status: not installed") }
+	failing := func(string) (pr.Platform, bool, error) {
+		return "", false, errors.New("not installed (gh auth status)")
+	}
 
 	// when
 	// ... the remote is picked
@@ -153,7 +155,38 @@ func TestPickRemoteReportsAFailedPlatformLookupWithItsHostname(t *testing.T) {
 
 	// then
 	// ... the lookup's error comes back, led by the hostname
-	if errText(err) != "ghe.example.com: gh auth status: not installed" {
+	if errText(err) != "ghe.example.com: not installed (gh auth status)" {
 		t.Fatalf("got %q", errText(err))
+	}
+}
+
+// onlyGitHubDotCom fails for every hostname but github.com, as a broken gh does.
+func onlyGitHubDotCom(hostname string) (pr.Platform, bool, error) {
+	if hostname != "github.com" {
+		return "", false, errors.New("gh broke")
+	}
+	return pr.GitHub, true, nil
+}
+
+func TestPickRemoteDoesNotLookUpRemotesTheRuleDoesNotReach(t *testing.T) {
+	// given
+	// ... origin on github.com and a mirror on gitlab.com, with a lookup that fails for any hostname but github.com
+	remotes := []gitrepo.Remote{
+		{Name: "mirror", URL: "git@gitlab.com:team/app.git"},
+		{Name: "origin", URL: "git@github.com:team/app.git"},
+	}
+
+	// when
+	// ... the remote is picked
+	repo, err := gitrepo.PickRemote(remotes, "", onlyGitHubDotCom)
+
+	// then
+	// ... origin is picked without looking up the mirror
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "team", Name: "app"}
+	if repo != want {
+		t.Fatalf("want %+v, got %+v", want, repo)
 	}
 }
