@@ -333,11 +333,11 @@ func (m *Model) lineComment() tea.Cmd {
 func (m *Model) openInlineEditor(ic pr.InlineComment, label, quote, initial string) tea.Cmd {
 	n := m.pr.number
 	ctx := faintStyle.Render(label) + "\n" + lipgloss.NewStyle().Foreground(midGrey).Render(quote)
-	e := newEditor("Inline comment", ctx, initial, true, func(body string) tea.Cmd {
+	e := newEditor("Inline comment", ctx, initial, true, func(body string) (string, func(context.Context) error) {
 		ic.Body = body
-		return m.act("inline comment on "+label, true, func(c context.Context) error {
+		return "inline comment on " + label, func(c context.Context) error {
 			return m.deps.PRs.AddInlineComment(c, n, ic)
-		})
+		}
 	})
 	m.modal = e
 	return e.focus()
@@ -350,10 +350,10 @@ func (m *Model) fileComment() tea.Cmd {
 		return nil
 	}
 	n, sha, path := p.number, p.data.PR.HeadSHA, f.Path()
-	e := newEditor("File comment", faintStyle.Render(path), "", true, func(body string) tea.Cmd {
-		return m.act("file comment on "+path, true, func(c context.Context) error {
+	e := newEditor("File comment", faintStyle.Render(path), "", true, func(body string) (string, func(context.Context) error) {
+		return "file comment on " + path, func(c context.Context) error {
 			return m.deps.PRs.AddFileComment(c, n, sha, path, body)
-		})
+		}
 	})
 	m.modal = e
 	return e.focus()
@@ -382,8 +382,8 @@ func (m *Model) replyOnLine() tea.Cmd {
 	}
 	n := m.pr.number
 	ctx := authorStyle.Render("@"+last.Author) + " " + lipgloss.NewStyle().Foreground(midGrey).Render(fit(oneLine(last.Body), 90))
-	e := newEditor("Reply", ctx, "", true, func(body string) tea.Cmd {
-		return m.act("reply", true, func(c context.Context) error { return m.deps.PRs.Reply(c, n, root, body) })
+	e := newEditor("Reply", ctx, "", true, func(body string) (string, func(context.Context) error) {
+		return "reply", func(c context.Context) error { return m.deps.PRs.Reply(c, n, root, body) }
 	})
 	m.modal = e
 	return e.focus()

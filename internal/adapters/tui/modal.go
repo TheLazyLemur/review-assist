@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 
 	"charm.land/bubbles/v2/textarea"
@@ -15,17 +16,30 @@ type modal interface {
 
 // ---- editor ----
 
+// post turns the editor text into an action: a label for the status line and
+// the call that posts it.
+type post func(body string) (what string, do func(context.Context) error)
+
+// The editor stays open while it posts and closes only on success, so a
+// refused post keeps the text.
 type editorModal struct {
 	title       string
 	context     string // rendered above the text area (e.g. the code being commented on)
 	ta          textarea.Model
 	required    bool
-	submit      func(body string) tea.Cmd
+	submit      post
+	posting     bool
 	armedCancel bool
 	err         string
 }
 
-func newEditor(title, context, initial string, required bool, submit func(string) tea.Cmd) *editorModal {
+type editorDoneMsg struct {
+	editor *editorModal
+	what   string
+	err    error
+}
+
+func newEditor(title, context, initial string, required bool, submit post) *editorModal {
 	ta := textarea.New()
 	ta.Placeholder = "Write in Markdown…"
 	ta.ShowLineNumbers = false
@@ -37,6 +51,12 @@ func newEditor(title, context, initial string, required bool, submit func(string
 func (e *editorModal) focus() tea.Cmd { return e.ta.Focus() }
 
 func (e *editorModal) update(m *Model, msg tea.Msg) tea.Cmd {
+	if e.posting {
+		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+c" {
+			return m.quit()
+		}
+		return nil
+	}
 	if k, ok := msg.(tea.KeyPressMsg); ok {
 		switch k.String() {
 		// ctrl+s is taken by multiplexers such as zellij; alt+enter is not.
@@ -46,8 +66,10 @@ func (e *editorModal) update(m *Model, msg tea.Msg) tea.Cmd {
 				e.err = "a message is required"
 				return nil
 			}
-			m.modal = nil
-			return e.submit(body)
+			what, do := e.submit(body)
+			e.posting, e.err = true, ""
+			m.busy++
+			return func() tea.Msg { return editorDoneMsg{e, what, do(m.ctx())} }
 		case "esc":
 			if strings.TrimSpace(e.ta.Value()) != "" && !e.armedCancel {
 				e.armedCancel = true
@@ -79,8 +101,12 @@ func (e *editorModal) view(m *Model, maxW, maxH int) string {
 	}
 	e.ta.SetHeight(max(min(12, maxH-ctxLines-6), 3))
 	b.WriteString("\n" + e.ta.View() + "\n\n")
+	if e.posting {
+		b.WriteString(subtleStyle.Render(m.spinner.View() + " posting…"))
+		return b.String()
+	}
 	if e.err != "" {
-		b.WriteString(errStyle.Render(e.err) + "  ")
+		b.WriteString(lipgloss.NewStyle().Width(w).Render(errStyle.Render(e.err)) + "\n")
 	}
 	b.WriteString(helpLine("alt+enter", "submit", "esc", "cancel"))
 	return b.String()

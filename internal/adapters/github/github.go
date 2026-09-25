@@ -38,7 +38,13 @@ func (r ExecRunner) Run(ctx context.Context, stdin []byte, name string, args ...
 		if msg == "" {
 			msg = err.Error()
 		}
-		return nil, fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), msg)
+		// The reason first: callers show this on one line cut to the terminal
+		// width, and the arguments can be long.
+		sub := args
+		if len(sub) > 2 {
+			sub = sub[:2]
+		}
+		return nil, fmt.Errorf("%s (%s %s)", msg, name, strings.Join(sub, " "))
 	}
 	return stdout.Bytes(), nil
 }

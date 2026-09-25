@@ -150,34 +150,37 @@ func (m *Model) updatePR(key string) tea.Cmd {
 // ---- actions ----
 
 func (m *Model) approve() tea.Cmd {
-	n := m.pr.number
-	m.modal = newEditor(fmt.Sprintf("Approve #%d", n), "Optional message. alt+enter approves.", "", false,
-		func(body string) tea.Cmd {
-			return m.act(fmt.Sprintf("approve #%d", n), true, func(ctx context.Context) error {
-				return m.deps.PRs.SubmitReview(ctx, n, pr.Approve, body)
-			})
-		})
-	return m.modal.(*editorModal).focus()
+	return m.verdictEditor(pr.Approve, fmt.Sprintf("Approve #%d", m.pr.number), "Optional message. alt+enter approves.", false)
 }
 
 func (m *Model) requestChanges() tea.Cmd {
-	n := m.pr.number
-	m.modal = newEditor(fmt.Sprintf("Request changes on #%d", n), "Explain what needs to change.", "", true,
-		func(body string) tea.Cmd {
-			return m.act(fmt.Sprintf("request changes on #%d", n), true, func(ctx context.Context) error {
-				return m.deps.PRs.SubmitReview(ctx, n, pr.RequestChanges, body)
-			})
-		})
-	return m.modal.(*editorModal).focus()
+	return m.verdictEditor(pr.RequestChanges, fmt.Sprintf("Request changes on #%d", m.pr.number), "Explain what needs to change.", true)
+}
+
+// verdictEditor opens the editor for approve or request changes. On the
+// viewer's own PR the host refuses both, so it says the review posts as a
+// comment review, and pr.ReviewFor converts it.
+func (m *Model) verdictEditor(event pr.ReviewEvent, title, hint string, required bool) tea.Cmd {
+	n, author, viewer := m.pr.number, m.pr.data.PR.Author, m.viewer
+	if own, _ := pr.ReviewFor(author, viewer, event, ""); own != event {
+		hint += "\nThis is your PR, so it posts as a comment review headed with the verdict."
+	}
+	what := strings.ToLower(title[:1]) + title[1:]
+	e := newEditor(title, hint, "", required, func(body string) (string, func(context.Context) error) {
+		event, body := pr.ReviewFor(author, viewer, event, body)
+		return what, func(ctx context.Context) error { return m.deps.PRs.SubmitReview(ctx, n, event, body) }
+	})
+	m.modal = e
+	return e.focus()
 }
 
 func (m *Model) commentReview() tea.Cmd {
 	n := m.pr.number
 	m.modal = newEditor(fmt.Sprintf("Review comment on #%d", n), "Submitted as a review (neither approve nor request changes).", "", true,
-		func(body string) tea.Cmd {
-			return m.act(fmt.Sprintf("submit review on #%d", n), true, func(ctx context.Context) error {
+		func(body string) (string, func(context.Context) error) {
+			return fmt.Sprintf("submit review on #%d", n), func(ctx context.Context) error {
 				return m.deps.PRs.SubmitReview(ctx, n, pr.CommentReview, body)
-			})
+			}
 		})
 	return m.modal.(*editorModal).focus()
 }
@@ -185,10 +188,10 @@ func (m *Model) commentReview() tea.Cmd {
 func (m *Model) prComment() tea.Cmd {
 	n := m.pr.number
 	m.modal = newEditor(fmt.Sprintf("Comment on #%d", n), "PR-level comment (conversation tab). Markdown supported.", "", true,
-		func(body string) tea.Cmd {
-			return m.act(fmt.Sprintf("comment on #%d", n), true, func(ctx context.Context) error {
+		func(body string) (string, func(context.Context) error) {
+			return fmt.Sprintf("comment on #%d", n), func(ctx context.Context) error {
 				return m.deps.PRs.Comment(ctx, n, body)
-			})
+			}
 		})
 	return m.modal.(*editorModal).focus()
 }

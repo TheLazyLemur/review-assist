@@ -248,10 +248,10 @@ func (m *Model) draftFromFinding(f review.Finding) tea.Cmd {
 		// GitHub rejects inline comments off the diff; fall back to a file comment.
 		n, sha := p.number, p.data.PR.HeadSHA
 		e := newEditor("File comment (drafted from agent suggestion)", faintStyle.Render(f.Path+" — line not in diff"), f.SuggestedComment, true,
-			func(body string) tea.Cmd {
-				return m.act("file comment on "+f.Path, true, func(c context.Context) error {
+			func(body string) (string, func(context.Context) error) {
+				return "file comment on " + f.Path, func(c context.Context) error {
 					return m.deps.PRs.AddFileComment(c, n, sha, f.Path, body)
-				})
+				}
 			})
 		m.modal = e
 		return e.focus()
