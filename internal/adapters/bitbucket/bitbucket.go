@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -29,7 +28,7 @@ type Client struct {
 // NewClient takes the API root, https://api.bitbucket.org/2.0 in production,
 // and an Atlassian account email with an API token.
 func NewClient(baseURL, email, token string, repo pr.Repo) *Client {
-	return &Client{http: http.DefaultClient, baseURL: strings.TrimSuffix(baseURL, "/"), email: email, token: token, repo: repo}
+	return &Client{http: &http.Client{Timeout: 60 * time.Second}, baseURL: strings.TrimSuffix(baseURL, "/"), email: email, token: token, repo: repo}
 }
 
 // ---- wire types: Bitbucket JSON field names stay in this file ----
@@ -77,6 +76,9 @@ func domainState(s string) (string, error) {
 	return "", fmt.Errorf("unknown Bitbucket pull request state %q", s)
 }
 
+// listLimit matches the GitHub adapter's list.
+const listLimit = 100
+
 var bitbucketStates = map[pr.State][]string{
 	pr.Open:   {"OPEN"},
 	pr.Merged: {"MERGED"},
@@ -97,6 +99,9 @@ type errorDTO struct {
 
 // ---- reads ----
 
+// Viewer is the account's nickname because that is the field a pull
+// request's Author carries, which pr.IsOwn compares; display_name is not
+// unique.
 func (c *Client) Viewer(ctx context.Context) (string, error) {
 	var u userDTO
 	if err := c.get(ctx, c.baseURL+"/user", &u); err != nil {
@@ -110,7 +115,8 @@ func (c *Client) List(ctx context.Context, state pr.State) ([]pr.Summary, error)
 	if !ok {
 		return nil, fmt.Errorf("unknown pull request state %q", state)
 	}
-	dtos, err := getAll[summaryDTO](ctx, c, c.repoPath("pullrequests"), url.Values{"state": states})
+	query := url.Values{"state": states, "sort": {"-updated_on"}}
+	dtos, err := getAll[summaryDTO](ctx, c, c.repoPath("pullrequests"), query, listLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -131,13 +137,16 @@ func (c *Client) repoPath(rest string) string {
 	return "/repositories/" + url.PathEscape(c.repo.Owner) + "/" + url.PathEscape(c.repo.Name) + "/" + rest
 }
 
-// getAll reads every page of a list endpoint.
-func getAll[T any](ctx context.Context, c *Client, path string, query url.Values) ([]T, error) {
-	q := maps.Clone(query)
-	q.Set("pagelen", "50")
+// getAll reads the pages of a list endpoint until it has max values, or all
+// of them when max is 0.
+func getAll[T any](ctx context.Context, c *Client, path string, query url.Values, max int) ([]T, error) {
+	q := url.Values{"pagelen": {"50"}}
+	for k, v := range query {
+		q[k] = v
+	}
 	next := c.baseURL + path + "?" + q.Encode()
 	var all []T
-	for next != "" {
+	for next != "" && (max == 0 || len(all) < max) {
 		// next comes from the response body; the credentials must not follow
 		// it to another host.
 		if !strings.HasPrefix(next, c.baseURL+"/") {
@@ -150,12 +159,15 @@ func getAll[T any](ctx context.Context, c *Client, path string, query url.Values
 		all = append(all, p.Values...)
 		next = p.Next
 	}
+	if max > 0 && len(all) > max {
+		all = all[:max]
+	}
 	return all, nil
 }
 
 // get decodes the JSON at an absolute URL into v.
 func (c *Client) get(ctx context.Context, rawURL string, v any) error {
-	body, err := c.do(ctx, http.MethodGet, rawURL)
+	body, err := c.do(ctx, rawURL)
 	if err != nil {
 		return err
 	}
@@ -165,8 +177,8 @@ func (c *Client) get(ctx context.Context, rawURL string, v any) error {
 	return nil
 }
 
-func (c *Client) do(ctx context.Context, method, rawURL string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
+func (c *Client) do(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +190,7 @@ func (c *Client) do(ctx context.Context, method, rawURL string) ([]byte, error) 
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read %s %s: %w", method, rawURL, err)
+		return nil, fmt.Errorf("read %s: %w", rawURL, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg := http.StatusText(resp.StatusCode)
@@ -188,7 +200,7 @@ func (c *Client) do(ctx context.Context, method, rawURL string) ([]byte, error) 
 		}
 		// The reason first: callers show this on one line cut to the terminal
 		// width, and the URL can be long.
-		return nil, fmt.Errorf("%s (%d %s %s)", msg, resp.StatusCode, method, rawURL)
+		return nil, fmt.Errorf("%s (%d GET %s)", msg, resp.StatusCode, rawURL)
 	}
 	return body, nil
 }

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -174,18 +175,17 @@ func TestListMapsPullRequestFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := pr.Summary{
+	// Parsed rather than built with time.Date: which Location a +00:00 offset
+	// decodes to depends on the machine's time zone.
+	updatedAt, err := time.Parse(time.RFC3339Nano, "2026-09-24T10:11:12.123456+00:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []pr.Summary{{
 		Number: 7, Title: "Add basket", Author: "dan", HeadRef: "feat/basket", BaseRef: "main",
-		IsDraft: true, State: "OPEN", UpdatedAt: time.Date(2026, 9, 24, 10, 11, 12, 123456000, time.UTC),
-	}
-	if len(got) != 1 {
-		t.Fatalf("want 1 summary, got %d", len(got))
-	}
-	if !got[0].UpdatedAt.Equal(want.UpdatedAt) {
-		t.Errorf("UpdatedAt: want %v, got %v", want.UpdatedAt, got[0].UpdatedAt)
-	}
-	got[0].UpdatedAt = want.UpdatedAt
-	if !reflect.DeepEqual(got[0], want) {
+		IsDraft: true, State: "OPEN", UpdatedAt: updatedAt,
+	}}
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("want %+v, got %+v", want, got[0])
 	}
 }
@@ -193,14 +193,14 @@ func TestListMapsPullRequestFields(t *testing.T) {
 func TestListFollowsNextAcrossPages(t *testing.T) {
 	// given
 	// ... pull requests split over two pages, the first linking to the second
-	var pagelen string
+	var pagelen, sort string
 	var srv *httptest.Server
 	srv = serve(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") == "2" {
 			fmt.Fprintf(w, `{"values":[%s]}`, pullRequestJSON(3, "OPEN", "dan"))
 			return
 		}
-		pagelen = r.URL.Query().Get("pagelen")
+		pagelen, sort = r.URL.Query().Get("pagelen"), r.URL.Query().Get("sort")
 		fmt.Fprintf(w, `{"values":[%s,%s],"next":"%s%s?state=OPEN&pagelen=50&page=2"}`,
 			pullRequestJSON(1, "OPEN", "dan"), pullRequestJSON(2, "OPEN", "dan"), srv.URL, listPath)
 	})
@@ -211,7 +211,7 @@ func TestListFollowsNextAcrossPages(t *testing.T) {
 	got, err := c.List(context.Background(), pr.Open)
 
 	// then
-	// ... all three come back, asked for 50 a page
+	// ... all three come back, asked for 50 a page, most recently updated first
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +224,42 @@ func TestListFollowsNextAcrossPages(t *testing.T) {
 	}
 	if pagelen != "50" {
 		t.Errorf("pagelen: want 50, got %q", pagelen)
+	}
+	if sort != "-updated_on" {
+		t.Errorf("sort: want -updated_on, got %q", sort)
+	}
+}
+
+func TestListStopsAtOneHundredPullRequests(t *testing.T) {
+	// given
+	// ... pages of 60 pull requests, each linking to the next
+	var pages []int
+	var srv *httptest.Server
+	srv = serve(t, func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		pages = append(pages, page)
+		var values []string
+		for i := range 60 {
+			values = append(values, pullRequestJSON(i+1, "OPEN", "dan"))
+		}
+		fmt.Fprintf(w, `{"values":[%s],"next":"%s%s?page=%d"}`, strings.Join(values, ","), srv.URL, listPath, page+1)
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+
+	// when
+	// ... open pull requests are listed
+	got, err := c.List(context.Background(), pr.Open)
+
+	// then
+	// ... exactly 100 come back and the third page is never requested
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 100 {
+		t.Errorf("want 100 pull requests, got %d", len(got))
+	}
+	if !slices.Equal(pages, []int{0, 1}) {
+		t.Errorf("pages requested: want [0 1], got %v", pages)
 	}
 }
 
@@ -301,6 +337,9 @@ func TestViewerOwnsThePullRequestsTheyOpened(t *testing.T) {
 	}
 	if viewer != "dan" {
 		t.Errorf("viewer: want dan, got %q", viewer)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("want 1 pull request, got %d", len(prs))
 	}
 	if !pr.IsOwn(prs[0].Author, viewer) {
 		t.Errorf("IsOwn(%q, %q) is false", prs[0].Author, viewer)
