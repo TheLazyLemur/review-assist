@@ -148,3 +148,41 @@ _Avoid_: Agent CLI, harness, wrapper
 A secret that proves who the user is to a backend or a code host, such as an
 API key or a token.
 _Avoid_: Key, token, secret, auth
+
+### Planning
+
+**Slice**:
+One outcome you can demo end to end. The unit of planned work, and the only
+grouping above a task.
+_Avoid_: Feature, epic, milestone, story
+
+**Demo**:
+What can be run at the end of a slice that could not be run before: a command
+and its observable result.
+_Avoid_: Goal, outcome, acceptance
+
+**Task**:
+One unit of work that lands as one pull request, with its own status. It
+usually belongs to a slice.
+_Avoid_: Ticket, issue, card, sub-task
+
+**Unplanned**:
+A task that arrived rather than being planned into a slice. How many there are
+says whether the plan is wrong.
+_Avoid_: Bug, interrupt, ad hoc
+
+**Depends on**:
+The tasks that must be done before another can start. It is the only order
+between tasks, because the work forks.
+_Avoid_: Blocked by, order, priority, sequence
+
+**Ready**:
+A task whose acceptance criteria someone other than its author can check,
+under a slice whose demo is concrete. It is about the writing, not the graph: a
+ready task may still wait on a dependency.
+_Avoid_: Groomed, refined, triaged, unblocked
+
+**Acceptance criterion**:
+One observable thing that must be true for a task to be done. If you cannot say
+what you would run or read to decide, it is not one yet.
+_Avoid_: Requirement, definition of done, done-when

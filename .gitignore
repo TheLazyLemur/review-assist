@@ -2,3 +2,4 @@
 /.claude/*
 !/.claude/skills/
 /.serena/
+__pycache__/

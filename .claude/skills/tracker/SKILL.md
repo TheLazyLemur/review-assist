@@ -1,164 +1,123 @@
 ---
 name: tracker
-description: Use when planning, picking up, or reporting on work in this repo - its GitHub Issues, how a feature splits into one task per pull request, and the conventions for titles, bodies, status, labels and links.
+description: Use when planning, picking up, or reporting on work in this repo - slices and tasks in its GitHub Issues, their statuses and dependencies, what can start now, and the dispatcher that reads and writes them. For writing a slice use to-slice, for breaking one into tasks use to-tasks, for taking a task to ready use refine-task.
 ---
 
-# Task tracker
+# Tracker
 
-Work that has not happened yet lives in this repo's GitHub Issues. It is the
-only place work-in-flight is recorded. A finding with no issue is a finding
-that is lost.
+Work that has not happened yet lives in this repo's GitHub Issues, as slices
+and tasks. It is the only place work in flight is recorded. A finding with no
+issue is a finding that is lost.
 
-Read and write it through one dispatcher, `.claude/skills/tracker/scripts/tracker`.
-It runs `gh`, which uses your own `gh auth login`.
+The terms (slice, demo, task, unplanned, depends on, ready, acceptance
+criterion) are defined in `CONTEXT.md`. This skill is how they map onto GitHub
+and how to read and write them.
+
+| Model | On GitHub |
+|---|---|
+| slice | an issue labelled `slice` |
+| task | a sub-issue of its slice |
+| unplanned task | an issue labelled `unplanned`, with no parent |
+| depends on | a native issue dependency ("blocked by"), declared from the dependent task |
+| related, discovered during | a `Related: #n` or `Discovered during #n` line at the end of the body |
+
+Write slices with `to-slice`, their tasks with `to-tasks`, and take a task to
+ready with `refine-task`, rather than by hand.
+
+## The dispatcher
+
+Read and write through `.claude/skills/tracker/scripts/tracker.py`. It runs
+`gh`, which uses your own `gh auth login`, and loads the whole repo in one
+query.
 
 ```sh
-tracker=.claude/skills/tracker/scripts/tracker   # path is from the repo root
-$tracker board.list
+tracker=.claude/skills/tracker/scripts/tracker.py   # path is from the repo root
+./board                  # what can start, what is in progress, what is blocked
+$tracker validate        # exits non-zero on any problem
+$tracker --help
 ```
 
-Methods are `<noun>.<verb>`; `$tracker --help` prints the surface. Every write
-refuses a pull request number (issues and pull requests share one number
-space), a label or status outside the vocabularies below, dropping an issue
-without saying why, and closing a feature that still has open tasks. Set
-`TRACKER_DRY_RUN=1` to print the `gh` commands instead of running them.
+It refuses what GitHub would accept but the model forbids: a pull request
+number (issues and pull requests share one number space), a dependency cycle,
+starting a task that is not ready or is still blocked, closing a task with
+unchecked criteria, closing a slice over open tasks, and dropping anything
+without saying why. Set `TRACKER_DRY_RUN=1` to print the writes instead of
+running them.
 
-Reach past it with raw `gh` only for something the surface does not cover; the
-commands, including sub-issues and dependencies through `gh api`, are in
-`docs/agents/issue-tracker.md`. Hand-written sub-issue and dependency calls are
-where the database-id-versus-number mix-up and the lagging summaries come from;
-removing those is why the dispatcher exists.
+Reach past it with raw `gh` only for a read it does not cover; the commands are
+in `docs/agents/issue-tracker.md`.
+
+```
+board [--done]                          slice.create --title --goal --demo [--implements]...
+validate                                             [--out-of-scope]... [--open]...
+issue.get <N>                           slice.sync <SLICE>
+ready <TASK>                            task.create --title --what --criterion... [--slice N]
+                                                    [--depends-on N]... [--note]
+                                        issue.update <N> [--title] [--body|--body-file]
+                                                         [--status S] [--note]
+                                        issue.link.add|remove <N> <RELATION> <OTHER>
+                                        issue.delete <N> --yes
+```
+
+`task.create` and `slice.create` print the new number and nothing else, so it
+can be captured. After adding tasks or dependencies to a slice, run
+`slice.sync`: it rewrites the slice's Tasks section (the task list, what can
+start now, and a mermaid graph) from the issues, so it never drifts. `validate`
+reports a stale section.
+
+## Status
+
+| Task status | On GitHub | Set with |
+|---|---|---|
+| todo | open | `--status todo` |
+| ready | open, labelled `ready` | `--status ready`, after `refine-task` |
+| doing | open, assigned | `--status doing`: refused unless ready and every dependency is done |
+| done | closed as completed | `--status done`: refused while a criterion is unchecked |
+| dropped | closed as not planned | `--status dropped --note 'why'` |
+
+A slice is open until you close it: `--status done` once every task is closed,
+or `--status dropped` with a note. Its progress comes from its tasks.
+
+Blocked is not a status. A task is blocked while a dependency is not done;
+`board` shows what each waits on. Ready and blocked are separate questions.
+
+A task's pull request says `Closes #<task>`, so merging it closes the task.
+Tick its criteria in the body before it merges, or `validate` reports it.
+
+A task left in progress at the end of a session gets a note saying where it
+stopped: `issue.update <N> --note '...'`.
 
 ## Granularity
 
-A **feature** is an issue. A **task** is one mergeable pull request, and it is a
-sub-issue of its feature.
-
-A task is the right size when `main` is green and installable once it lands.
-The code may be inert, such as an adapter nothing wires in yet, as long as it
-moves the feature on. Anything smaller is a sub-task: implementation detail for
-the session's todo list, not an issue. It dies with the session, deliberately.
+A task lands as one pull request that leaves `main` green and installable. The
+code may be inert, such as an adapter nothing wires in yet, as long as it moves
+the slice on. Tasks are layers under a slice; the slice is the vertical cut
+that gets demoed. Anything smaller than a task is a session todo, not an issue.
 
 Inert code is not free in Go: `unused` flags unexported functions nothing
 calls. Export the intermediate layer, or the task does not land green.
 
-The sub-issue order is the task order, and it usually carries dependency: a
-TUI change cannot precede the port it calls. Tasks that are genuinely
-independent may be taken in any order.
-
-```
-#20  Bitbucket pull requests cannot be reviewed
-  #21  Bitbucket CodeHost reads pull requests, diffs and comments   inert, not wired
-  #22  Bitbucket CodeHost posts comments and verdicts               inert, not wired
-  #23  Repositories on bitbucket.org open with the Bitbucket adapter  feature goes live
-```
-
-Not issues: "add the Bitbucket section to config.example.json", "write the DTO
-structs", "test an empty comment list". Those are session todos.
-
-If you cannot write the pull request title from the task title, the task is
-too small or too vague.
-
 ## Conventions
 
-- **A title is a claim, not a topic.** "Own-PR verdicts fail on Bitbucket", not
-  "Bitbucket verdicts".
-- **The body carries enough to pick the issue up cold**: what breaks, where, and
-  how you know. Not how to fix it.
-- **The tracker holds what, why, and where it stopped.** How is decided when the
-  task is taken. It goes in `.agents/specs/` and `.agents/plans/`, one file per
-  task, named `YYYY-MM-DD-<task number>-<slug>.md`, then in the code and its
-  pull request. Never in the issue body. A constraint that outlives the task,
-  such as "reuse the gh runner, do not add a second", is a requirement, so it
-  does belong in the body.
-- **A task's pull request says `Closes #<task>`.** Merging it closes the task.
-  Close the feature by hand when its last task lands: GitHub leaves it open.
-- **Use the domain language.** Titles and bodies use the terms in `CONTEXT.md`.
-
-### Status
-
-| State | On GitHub |
-|---|---|
-| open | open, no assignee |
-| in progress | open, assigned (`--add-assignee @me` is the session's first write) |
-| blocked | open, with an open blocking dependency |
-| done | closed as completed |
-| dropped | closed as not planned, with a comment saying why |
-
-A task left in progress at the end of a session gets a comment saying where it
-stopped. A pull-request-sized task is opaque without one.
-
-### Labels
-
-- `needs-triage`: not yet checked, sized or split.
-- `ready-for-agent`: specified well enough for an agent to take it cold.
-
-Add labels sparingly. GitHub already shows a task's open pull request, so no
-label says one is open.
-
-### Links
-
-- **Blocks** is a native dependency, declared from the blocked side. One edge
-  per dependency: two statements of one fact can disagree.
-- **Related** is a `Related: #n` line at the end of the body.
-- **Discovered during** is a `Discovered during #n` line at the end of the body,
-  for an issue found while working on another.
-
-## The surface
-
-```
-board.list [--status S] [--label L]     issue.create --title T --body|--body-file ...
-issue.get <N>                           issue.update <N> --title|--body|--status|--note
-task.list <FEATURE>                     issue.delete <N> --yes
-                                        issue.label.add|remove  <N> <LABEL>
-                                        issue.link.add|remove   <N> <RELATION> <OTHER>
-                                        task.append <FEATURE> <TITLE>
-                                        task.move   <FEATURE> <TASK> --before|--after <OTHER>
-```
-
-Open a feature with its tasks. `issue.create` prints the feature number on
-stdout and nothing else, so it can be captured:
-
-```sh
-n=$($tracker issue.create \
-  --title 'Title as a claim' --body-file body.md --label needs-triage \
-  --task 'Bitbucket CodeHost reads pull requests' --task 'Bitbucket CodeHost posts comments')
-```
-
-Take a task, say where it stopped, and close it:
-
-```sh
-$tracker issue.update 21 --status in-progress
-$tracker issue.update 21 --note 'Reads work; posting next.'
-$tracker issue.update 21 --status done
-```
-
-A task's pull request says `Closes #21`, so merging it closes the task anyway.
-Close the feature when its last task lands; the dispatcher refuses while any
-task is open:
-
-```sh
-$tracker issue.update 20 --status done --note 'All tasks landed.'
-```
-
-Declare a blocker from the blocked side, and reorder tasks:
-
-```sh
-$tracker issue.link.add 23 blocked-by 22
-$tracker task.move 20 23 --before 21
-```
-
-`scripts/tracker-test` covers the surface, every refusal and the quoting against
-`TRACKER_DRY_RUN=1`, so it touches no network and no issue. Run it after
-editing the dispatcher. It does not prove the queries against GitHub: after a
-change to a query, run the method once against a throwaway repo.
+- **A title is a claim or a product, not a topic.** A slice or an unplanned
+  task names what is wrong or missing: "Own-PR verdicts fail on Bitbucket".
+  A planned task names what it produces: "Bitbucket CodeHost reads pull
+  requests".
+- **The body carries enough to pick the work up cold.** Not how to do it: how is
+  decided when the task is taken, in `.agents/specs/` and `.agents/plans/`, one
+  file per task named `YYYY-MM-DD-<task number>-<slug>.md`. A constraint that
+  outlives the task is a requirement, so it does belong in the body.
+- **No file paths or code in slices and tasks**; they go stale. A type shape
+  that pins a decision is the exception.
+- **Use the domain language** of `CONTEXT.md`.
 
 ## Rules
 
 - Anything that survives the session goes in the tracker before it is
   forgotten. Deferred work that must happen goes in an issue, never only in pull
   request prose.
+- Work that arrives unplanned is still a task: `task.create` without `--slice`.
+  Do not invent a slice to hold it.
 - Close a task the moment it is true, not at the end of the turn.
-- Do not invent a status or a label outside the vocabularies above.
-- Write through the dispatcher. Raw `gh` is for reads the surface lacks.
+- Write through the dispatcher. Run `validate` before you finish.
 - A spec or a plan is never an issue.
