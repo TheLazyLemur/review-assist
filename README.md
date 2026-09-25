@@ -19,17 +19,49 @@ review-assist OWNER/REPO#12       # github.com
 review-assist HOST/OWNER/REPO#12  # any host
 ```
 
-Flags:
+## Settings
 
-| flag | env | default |
-|---|---|---|
-| `-model` | `REVIEW_ASSIST_MODEL` | `deepseek-v4.1-flash:cloud` |
-| `-base-url` (alias `-ollama`) | `REVIEW_ASSIST_BASE_URL`, then `OLLAMA_HOST` | `http://localhost:11434` |
-| `-api-key` | `REVIEW_ASSIST_API_KEY`, then `ANTHROPIC_API_KEY` | a placeholder; local Ollama needs no key |
-| `-concurrency` | | 4 agents at once |
-| `-max-turns` | | 40 model turns per agent |
-| `-think` | | off |
-| `-log FILE` | `REVIEW_ASSIST_LOG` | off; one line per model call |
+Each setting can come from the config file, an environment variable or a flag.
+They apply in that order, so a flag beats an env var and an env var beats the
+file.
+
+| config file key | env | flag | default |
+|---|---|---|---|
+| `model.name` | `REVIEW_ASSIST_MODEL` | `-model` | `deepseek-v4.1-flash:cloud` |
+| `model.base_url` | `REVIEW_ASSIST_BASE_URL` | `-base-url` (alias `-ollama`) | `OLLAMA_HOST`, else `http://localhost:11434` |
+| `model.api_key` | `REVIEW_ASSIST_API_KEY` | `-api-key` | `ANTHROPIC_API_KEY`, else a placeholder (local Ollama needs no key) |
+| `model.think` | | `-think` | off |
+| `model.log` | `REVIEW_ASSIST_LOG` | `-log FILE` | off; one line per model call |
+| `review.concurrency` | | `-concurrency` | 4 agents at once |
+| `review.max_turns` | | `-max-turns` | 40 model turns per agent |
+
+`OLLAMA_HOST` and `ANTHROPIC_API_KEY` are shared with other tools, so they only
+replace the built-in default. They never override the config file.
+
+The config file is JSON:
+
+- macOS and Linux: `~/.config/review-assist/config.json`, or
+  `$XDG_CONFIG_HOME/review-assist/config.json` when that is set.
+- Windows: `%AppData%\review-assist\config.json`.
+
+`review-assist -h` prints the path it uses. A missing file is fine. An unknown
+key is an error, so a typo fails loudly instead of being ignored.
+
+```json
+{
+  "model": {
+    "base_url": "http://localhost:11434",
+    "name": "deepseek-v4.1-flash:cloud",
+    "think": false
+  },
+  "review": {
+    "concurrency": 4,
+    "max_turns": 40
+  }
+}
+```
+
+If you put `api_key` in the file, keep the file private (`chmod 600`).
 
 The model must support tools. Thinking is off by default: with it on, models
 here spent their whole token budget thinking and each turn took 20–40 s.

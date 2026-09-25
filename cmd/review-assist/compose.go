@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -33,7 +34,13 @@ type config struct {
 // run is the composition root: it reads configuration, builds the adapters,
 // connects them to the core, and starts the TUI.
 func run(args []string) error {
-	cfg, err := parseConfig(args)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	userConfig, _ := os.UserConfigDir() // only used off unix-likes
+	path := configPath(runtime.GOOS, home, os.Getenv("XDG_CONFIG_HOME"), userConfig)
+	cfg, err := parseConfig(args, os.Getenv, path)
 	if err != nil {
 		return err
 	}
@@ -72,24 +79,41 @@ func run(args []string) error {
 	return err
 }
 
-func parseConfig(args []string) (config, error) {
+// parseConfig layers settings: defaults, then the config file, then
+// REVIEW_ASSIST_* env vars, then flags. The last one set wins. OLLAMA_HOST and
+// ANTHROPIC_API_KEY are shared with other tools, so they only replace the
+// built-in defaults and never override the file.
+func parseConfig(args []string, getenv func(string) string, configFile string) (config, error) {
 	cfg := config{
 		model: anthropic.Config{
-			BaseURL: firstSet(os.Getenv("REVIEW_ASSIST_BASE_URL"), os.Getenv("OLLAMA_HOST"), "http://localhost:11434"),
-			APIKey:  firstSet(os.Getenv("REVIEW_ASSIST_API_KEY"), os.Getenv("ANTHROPIC_API_KEY"), "ollama"), // the SDK needs a key; Ollama ignores it
-			Model:   firstSet(os.Getenv("REVIEW_ASSIST_MODEL"), defaultModel),
-			LogPath: os.Getenv("REVIEW_ASSIST_LOG"),
+			BaseURL: firstSet(getenv("OLLAMA_HOST"), "http://localhost:11434"),
+			APIKey:  firstSet(getenv("ANTHROPIC_API_KEY"), "ollama"), // the SDK needs a key; Ollama ignores it
+			Model:   defaultModel,
 		},
 		maxTurns:    40,
 		concurrency: 4,
 	}
+	if err := loadConfigFile(configFile, &cfg); err != nil {
+		return cfg, err
+	}
+	for env, dst := range map[string]*string{
+		"REVIEW_ASSIST_BASE_URL": &cfg.model.BaseURL,
+		"REVIEW_ASSIST_API_KEY":  &cfg.model.APIKey,
+		"REVIEW_ASSIST_MODEL":    &cfg.model.Model,
+		"REVIEW_ASSIST_LOG":      &cfg.model.LogPath,
+	} {
+		if v := getenv(env); v != "" {
+			*dst = v
+		}
+	}
+
 	fs := flag.NewFlagSet("review-assist", flag.ContinueOnError)
-	fs.StringVar(&cfg.model.BaseURL, "base-url", cfg.model.BaseURL, "Anthropic-compatible API base URL (env REVIEW_ASSIST_BASE_URL, then OLLAMA_HOST)")
+	fs.StringVar(&cfg.model.BaseURL, "base-url", cfg.model.BaseURL, "Anthropic-compatible API base URL (env REVIEW_ASSIST_BASE_URL)")
 	fs.StringVar(&cfg.model.BaseURL, "ollama", cfg.model.BaseURL, "deprecated alias of -base-url")
 	// No default shown: -h must never print a key taken from the environment.
-	apiKey := fs.String("api-key", "", "API key sent as x-api-key (env REVIEW_ASSIST_API_KEY, then ANTHROPIC_API_KEY)")
+	apiKey := fs.String("api-key", "", "API key sent as x-api-key (env REVIEW_ASSIST_API_KEY)")
 	fs.StringVar(&cfg.model.Model, "model", cfg.model.Model, "model for review agents; needs tool support (env REVIEW_ASSIST_MODEL)")
-	fs.BoolVar(&cfg.model.Think, "think", false, "let the model use extended thinking (slower)")
+	fs.BoolVar(&cfg.model.Think, "think", cfg.model.Think, "let the model use extended thinking (slower)")
 	fs.StringVar(&cfg.model.LogPath, "log", cfg.model.LogPath, "append one line per model call to this file (env REVIEW_ASSIST_LOG)")
 	fs.IntVar(&cfg.concurrency, "concurrency", cfg.concurrency, "max agents running at once")
 	fs.IntVar(&cfg.maxTurns, "max-turns", cfg.maxTurns, "max model turns per agent (min 4)")
@@ -99,6 +123,9 @@ func parseConfig(args []string) (config, error) {
 With no PR, lists pull requests of the GitHub repository in the current directory.
 PR may be a number (in the current repository), a PR URL on github.com or a
 GitHub Enterprise host, OWNER/REPO#N or HOST/OWNER/REPO#N.
+
+Settings come from the config file, then REVIEW_ASSIST_* env vars, then flags;
+the last one set wins. Config file: `+configFile+`
 
 flags:
 `)
