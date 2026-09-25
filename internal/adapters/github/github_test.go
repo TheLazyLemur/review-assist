@@ -3,6 +3,7 @@ package github_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -76,10 +77,13 @@ func TestFailedCommandErrorLeadsWithTheReason(t *testing.T) {
 	}
 }
 
-type cannedRunner struct{ out string }
+type cannedRunner struct {
+	out string
+	err error
+}
 
 func (r cannedRunner) Run(context.Context, []byte, string, ...string) ([]byte, error) {
-	return []byte(r.out), nil
+	return []byte(r.out), r.err
 }
 
 func TestPlatformsCountsHostnamesGhIsLoggedInToAsGitHub(t *testing.T) {
@@ -90,12 +94,15 @@ func TestPlatformsCountsHostnamesGhIsLoggedInToAsGitHub(t *testing.T) {
 
 	// when
 	// ... the enterprise server, bitbucket.org and an unknown hostname are looked up
-	ghe, gheOK := platformOf("ghe.example.com")
-	bitbucket, bitbucketOK := platformOf("bitbucket.org")
-	_, gitlabOK := platformOf("gitlab.com")
+	ghe, gheOK, gheErr := platformOf("ghe.example.com")
+	bitbucket, bitbucketOK, bitbucketErr := platformOf("bitbucket.org")
+	_, gitlabOK, gitlabErr := platformOf("gitlab.com")
 
 	// then
 	// ... the enterprise server is GitHub, bitbucket.org is Bitbucket, and the unknown one is on no code host
+	if err := errors.Join(gheErr, bitbucketErr, gitlabErr); err != nil {
+		t.Fatal(err)
+	}
 	if ghe != pr.GitHub || !gheOK {
 		t.Errorf("ghe.example.com: got %q %v", ghe, gheOK)
 	}
@@ -104,5 +111,26 @@ func TestPlatformsCountsHostnamesGhIsLoggedInToAsGitHub(t *testing.T) {
 	}
 	if gitlabOK {
 		t.Error("gitlab.com counted as a code host")
+	}
+}
+
+func TestPlatformsReportsAFailedGhRun(t *testing.T) {
+	// given
+	// ... a gh that fails
+	run := cannedRunner{err: errors.New("gh: command not found")}
+	platformOf := github.Platforms(context.Background(), run)
+
+	// when
+	// ... a hostname that needs gh, and github.com, are looked up
+	_, _, gheErr := platformOf("ghe.example.com")
+	dotcom, dotcomOK, dotcomErr := platformOf("github.com")
+
+	// then
+	// ... the enterprise lookup carries gh's error, and github.com is GitHub without gh
+	if gheErr == nil || !strings.Contains(gheErr.Error(), "gh: command not found") {
+		t.Errorf("ghe.example.com: got %v", gheErr)
+	}
+	if dotcom != pr.GitHub || !dotcomOK || dotcomErr != nil {
+		t.Errorf("github.com: got %q %v %v", dotcom, dotcomOK, dotcomErr)
 	}
 }

@@ -50,37 +50,43 @@ func (r ExecRunner) Run(ctx context.Context, stdin []byte, name string, args ...
 	return stdout.Bytes(), nil
 }
 
-// Platforms says which platform a hostname is on. A hostname gh is logged in
-// to is GitHub on that hostname. gh is asked at most once, and only for a
-// hostname other than github.com and bitbucket.org, so a Bitbucket clone does
-// not need gh.
-func Platforms(ctx context.Context, run Runner) func(hostname string) (pr.Platform, bool) {
+// Platforms says which platform a hostname is on. A hostname gh has
+// credentials for, working or not, is GitHub on that hostname: gh --json exits
+// 0 and lists a failing host with state "error", and dropping it would hide the
+// real error behind "no supported code host". gh is asked at most once, and
+// only for a hostname other than github.com and bitbucket.org, so a Bitbucket
+// clone does not need gh.
+func Platforms(ctx context.Context, run Runner) func(hostname string) (pr.Platform, bool, error) {
 	var once sync.Once
 	var ghHosts map[string]json.RawMessage
-	return func(hostname string) (pr.Platform, bool) {
+	var ghErr error
+	return func(hostname string) (pr.Platform, bool, error) {
 		switch hostname {
 		case "github.com":
-			return pr.GitHub, true
+			return pr.GitHub, true, nil
 		case "bitbucket.org":
-			return pr.Bitbucket, true
+			return pr.Bitbucket, true, nil
 		}
 		once.Do(func() {
-			// A failure leaves no hosts: without a working gh no GitHub
-			// Enterprise server is usable anyway.
 			out, err := run.Run(ctx, nil, "gh", "auth", "status", "--json", "hosts")
 			if err != nil {
+				ghErr = fmt.Errorf("gh auth status: %w", err)
 				return
 			}
 			var v struct{ Hosts map[string]json.RawMessage }
 			if err := json.Unmarshal(out, &v); err != nil {
+				ghErr = fmt.Errorf("gh auth status: %w", err)
 				return
 			}
 			ghHosts = v.Hosts
 		})
-		if _, ok := ghHosts[hostname]; ok {
-			return pr.GitHub, true
+		if ghErr != nil {
+			return "", false, ghErr
 		}
-		return "", false
+		if _, ok := ghHosts[hostname]; ok {
+			return pr.GitHub, true, nil
+		}
+		return "", false, nil
 	}
 }
 

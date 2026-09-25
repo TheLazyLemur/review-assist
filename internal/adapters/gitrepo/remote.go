@@ -15,15 +15,20 @@ import (
 type Remote struct{ Name, URL string }
 
 // PlatformOf says which platform a hostname is on; false when it is on no
-// supported code host.
-type PlatformOf func(hostname string) (pr.Platform, bool)
+// supported code host. An error means it could not tell.
+type PlatformOf func(hostname string) (pr.Platform, bool, error)
 
 // FindRemote picks the repository of the clone at dir from its git remotes,
 // by PickRemote.
 func FindRemote(ctx context.Context, dir string, platformOf PlatformOf) (pr.Repo, error) {
 	r := &Repo{dir: dir}
-	if _, err := r.git(ctx, "rev-parse", "--git-dir"); err != nil {
+	_, err := r.git(ctx, "rev-parse", "--git-dir")
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 128 {
 		return pr.Repo{}, fmt.Errorf("%s is not in a git repository", dir)
+	}
+	if err != nil {
+		return pr.Repo{}, fmt.Errorf("git rev-parse: %w", err)
 	}
 	out, err := r.git(ctx, "remote", "-v")
 	if err != nil {
@@ -79,7 +84,10 @@ func PickRemote(remotes []Remote, tracked string, platformOf PlatformOf) (pr.Rep
 		if !ok {
 			continue
 		}
-		platform, ok := platformOf(hostname)
+		platform, ok, err := platformOf(hostname)
+		if err != nil {
+			return pr.Repo{}, fmt.Errorf("%s: %w", hostname, err)
+		}
 		if !ok {
 			continue
 		}

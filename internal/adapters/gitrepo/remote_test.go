@@ -1,6 +1,7 @@
 package gitrepo_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/TheLazyLemur/review-assist/internal/adapters/gitrepo"
@@ -19,13 +20,13 @@ var urlForms = []struct {
 	{"https-user", func(h, p string) string { return "https://someone@" + h + "/" + p }},
 }
 
-func fakePlatforms(hostname string) (pr.Platform, bool) {
+func fakePlatforms(hostname string) (pr.Platform, bool, error) {
 	platform, ok := map[string]pr.Platform{
 		"github.com":    pr.GitHub,
 		"ghe.example.com":   pr.GitHub,
 		"bitbucket.org": pr.Bitbucket,
 	}[hostname]
-	return platform, ok
+	return platform, ok, nil
 }
 
 func errText(err error) string {
@@ -98,7 +99,7 @@ func TestPickRemote(t *testing.T) {
 			want:    pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "TheLazyLemur", Name: "review-assist"},
 		},
 		{
-			name:    "a hostname gh is logged in to is GitHub on that hostname",
+			name:    "a GitHub Enterprise hostname keeps its hostname",
 			remotes: []remote{{"origin", "ghe.example.com", "acme/widgets"}},
 			want:    pr.Repo{Platform: pr.GitHub, Hostname: "ghe.example.com", Owner: "acme", Name: "widgets"},
 		},
@@ -137,5 +138,22 @@ func TestPickRemote(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestPickRemoteReportsAFailedPlatformLookupWithItsHostname(t *testing.T) {
+	// given
+	// ... a remote on a hostname whose platform lookup fails
+	remotes := []gitrepo.Remote{{Name: "origin", URL: "git@ghe.example.com:acme/widgets.git"}}
+	failing := func(string) (pr.Platform, bool, error) { return "", false, errors.New("gh auth status: not installed") }
+
+	// when
+	// ... the remote is picked
+	_, err := gitrepo.PickRemote(remotes, "", failing)
+
+	// then
+	// ... the lookup's error comes back, led by the hostname
+	if errText(err) != "ghe.example.com: gh auth status: not installed" {
+		t.Fatalf("got %q", errText(err))
 	}
 }

@@ -49,7 +49,7 @@ func ParseRef(s string) (Repo, int, error) {
 	}
 	if m := prURLRe.FindStringSubmatch(s); m != nil {
 		n, _ := strconv.Atoi(m[4])
-		return Repo{Platform: GitHub, Hostname: m[1], Owner: m[2], Name: strings.TrimSuffix(m[3], ".git")}, n, nil
+		return Repo{Platform: platformOf(m[1]), Hostname: m[1], Owner: m[2], Name: strings.TrimSuffix(m[3], ".git")}, n, nil
 	}
 	if m := shortRefRe.FindStringSubmatch(s); m != nil {
 		hostname := m[1]
@@ -57,9 +57,18 @@ func ParseRef(s string) (Repo, int, error) {
 			hostname = "github.com"
 		}
 		n, _ := strconv.Atoi(m[4])
-		return Repo{Platform: GitHub, Hostname: hostname, Owner: m[2], Name: m[3]}, n, nil
+		return Repo{Platform: platformOf(hostname), Hostname: hostname, Owner: m[2], Name: m[3]}, n, nil
 	}
 	return Repo{}, 0, fmt.Errorf("invalid PR reference %q (use a PR URL, OWNER/REPO#N or HOST/OWNER/REPO#N)", s)
+}
+
+// platformOf trusts any hostname but bitbucket.org to be GitHub: a reference
+// names its hostname, and only GitHub runs on hostnames of its own.
+func platformOf(hostname string) Platform {
+	if strings.EqualFold(hostname, "bitbucket.org") {
+		return Bitbucket
+	}
+	return GitHub
 }
 
 // State filters the PR list.

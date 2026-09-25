@@ -157,7 +157,8 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 		fmt.Fprint(fs.Output(), `usage: review-assist [flags] [PR]
        review-assist --init    write a first config file that uses Claude Code
 
-With no PR, lists pull requests of the GitHub repository in the current directory.
+With no PR, lists pull requests of the repository found from the git remotes of
+the current directory.
 PR may be a number (in the current repository), a PR URL on github.com or a
 GitHub Enterprise host, OWNER/REPO#N or HOST/OWNER/REPO#N.
 
@@ -240,7 +241,16 @@ func findTarget(ctx context.Context, cwd string, runner github.Runner, target st
 	if err != nil {
 		return pr.Repo{}, 0, false, err
 	}
-	return repo, n, localErr == nil && local == repo, nil
+	return repo, n, localErr == nil && sameRepo(local, repo), nil
+}
+
+// sameRepo ignores case in hostname, owner and name: a remote URL and a pasted
+// PR URL may spell them differently.
+func sameRepo(a, b pr.Repo) bool {
+	return a.Platform == b.Platform &&
+		strings.EqualFold(a.Hostname, b.Hostname) &&
+		strings.EqualFold(a.Owner, b.Owner) &&
+		strings.EqualFold(a.Name, b.Name)
 }
 
 func nonEmpty[T comparable](v T) *T {
