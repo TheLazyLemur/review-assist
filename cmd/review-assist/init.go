@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"golang.org/x/term"
+
+	"github.com/TheLazyLemur/review-assist/internal/core/review"
 )
 
 func runInit(path string) error {
@@ -101,14 +103,14 @@ func writeInitConfig(path, token string) error {
 func writeExampleConfig(path string) error {
 	var fc fileConfig
 	fc.Backend = ptr(backendClaudeCode)
-	fc.Anthropic.BaseURL = ptr("http://localhost:11434")
-	fc.Anthropic.APIKey = ptr("ollama")
-	fc.Anthropic.Model = ptr(defaultAnthropicModel)
-	fc.Anthropic.Think = ptr(false)
-	fc.Anthropic.Log = ptr("")
+	fc.MessagesAPI.BaseURL = ptr("http://localhost:11434")
+	fc.MessagesAPI.APIKey = ptr("ollama")
+	fc.MessagesAPI.Model = ptr(defaultMessagesModel)
+	fc.MessagesAPI.Effort = ptr(review.EffortNone)
+	fc.MessagesAPI.Log = ptr("")
 	fc.ClaudeCode.Token = ptr("")
 	fc.ClaudeCode.Model = ptr("sonnet")
-	fc.ClaudeCode.Effort = ptr("medium")
+	fc.ClaudeCode.Effort = ptr(review.EffortMedium)
 	fc.ClaudeCode.Executable = ptr("claude")
 	fc.Review.Concurrency = ptr(4)
 	fc.Review.MaxTurns = ptr(40)

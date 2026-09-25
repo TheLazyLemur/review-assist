@@ -296,7 +296,7 @@ func (m *Model) agentView(w, h int) string {
 func (m *Model) agentIntro(w int) string {
 	var s strings.Builder
 	s.WriteString("# Agent review\n\n")
-	s.WriteString("Press **A** (or enter) to run a review with **" + m.deps.ModelName + "** via Ollama.\n\n")
+	s.WriteString("Press **A** (or enter) to run a review with **" + m.deps.ModelName + "**.\n\n")
 	s.WriteString("Agents are **read-only**. They read the diff and the repository at the PR's head and base (files, grep, history) and suggest where a comment could go. They never post anything; you decide what to send.\n\n")
 	s.WriteString("| level | agents | what runs |\n|---|---|---|\n")
 	for _, l := range review.Levels {

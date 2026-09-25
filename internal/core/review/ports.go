@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"slices"
 
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 )
@@ -52,3 +53,19 @@ type Code interface {
 	Grep(ctx context.Context, sha, pattern, path string, ignoreCase bool) ([]string, error)
 	Log(ctx context.Context, sha, path string, limit int) (string, error)
 }
+
+// Effort is how hard each model reasons. Empty leaves it to the backend.
+type Effort string
+
+const (
+	EffortNone   Effort = "none"
+	EffortLow    Effort = "low"
+	EffortMedium Effort = "medium"
+	EffortHigh   Effort = "high"
+	EffortXhigh  Effort = "xhigh"
+	EffortMax    Effort = "max"
+)
+
+var Efforts = []Effort{EffortNone, EffortLow, EffortMedium, EffortHigh, EffortXhigh, EffortMax}
+
+func (e Effort) Valid() bool { return e == "" || slices.Contains(Efforts, e) }

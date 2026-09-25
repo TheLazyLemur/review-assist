@@ -1,7 +1,8 @@
-// Package anthropic implements review.Agent over the Anthropic Messages API
-// (<base URL>/v1/messages) with the official SDK. Any compatible endpoint
-// works: Ollama, Anthropic, or a proxy.
-package anthropic
+// Package messagesapi is the Messages API backend: it implements
+// review.Backend over the Anthropic Messages API (<base URL>/v1/messages)
+// with the official SDK. Any compatible endpoint works: Ollama, Anthropic, or
+// a proxy.
+package messagesapi
 
 import (
 	"context"
@@ -19,35 +20,36 @@ type Config struct {
 	BaseURL string // e.g. http://localhost:11434 (Ollama) or https://api.anthropic.com
 	APIKey  string // sent as x-api-key; Ollama ignores it
 	Model   string
-	// Think leaves the model's extended thinking on. Off by default: agents
-	// reason through their tool calls, and thinking multiplies turn latency.
-	Think bool
+	// Effort empty or none turns thinking off: agents reason through their
+	// tool calls, and thinking multiplies turn latency. Any other effort turns
+	// on adaptive thinking at that effort.
+	Effort review.Effort
 	// LogPath gets one line per model call (timing, tokens).
 	LogPath string
 }
 
-type Agent struct {
+type Backend struct {
 	cfg    Config
 	client sdk.Client
 }
 
-var _ review.Backend = (*Agent)(nil)
+var _ review.Backend = (*Backend)(nil)
 
-func New(cfg Config) *Agent {
-	if cfg.BaseURL == "" || cfg.APIKey == "" || cfg.Model == "" {
-		panic(fmt.Sprintf("anthropic.New: base URL, API key and model are required (url=%q model=%q key set=%v)",
+func New(cfg Config) *Backend {
+	if cfg.BaseURL == "" || cfg.APIKey == "" || cfg.Model == "" || !cfg.Effort.Valid() {
+		panic(fmt.Sprintf("messagesapi.New: base URL, API key and model are required (url=%q model=%q key set=%v)",
 			cfg.BaseURL, cfg.Model, cfg.APIKey != ""))
 	}
-	return &Agent{cfg: cfg, client: sdk.NewClient(
+	return &Backend{cfg: cfg, client: sdk.NewClient(
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(cfg.APIKey),
 		option.WithMaxRetries(2),
 	)}
 }
 
-func (a *Agent) Run(ctx context.Context, task review.Task) error {
+func (a *Backend) Run(ctx context.Context, task review.Task) error {
 	if task.Done == nil || task.FinishTool == "" || task.MaxTurns < 4 {
-		panic(fmt.Sprintf("anthropic.Run: incomplete task %q", task.Name))
+		panic(fmt.Sprintf("messagesapi.Run: incomplete task %q", task.Name))
 	}
 	tools := make([]sdk.ToolUnionParam, 0, len(task.Tools))
 	byName := make(map[string]review.Tool, len(task.Tools))
@@ -76,8 +78,12 @@ func (a *Agent) Run(ctx context.Context, task review.Task) error {
 			Messages:  messages,
 			Tools:     tools,
 		}
-		if !a.cfg.Think {
+		switch a.cfg.Effort {
+		case "", review.EffortNone:
 			params.Thinking = sdk.ThinkingConfigParamUnion{OfDisabled: &sdk.ThinkingConfigDisabledParam{}}
+		default:
+			params.Thinking = sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{}}
+			params.OutputConfig = sdk.OutputConfigParam{Effort: sdk.OutputConfigEffort(a.cfg.Effort)}
 		}
 		start := time.Now()
 		resp, err := a.client.Messages.New(ctx, params)
@@ -128,7 +134,7 @@ func (a *Agent) Run(ctx context.Context, task review.Task) error {
 	return fmt.Errorf("agent used all %d turns", task.MaxTurns)
 }
 
-func (a *Agent) log(agent string, turn int, start time.Time, resp *sdk.Message, err error) {
+func (a *Backend) log(agent string, turn int, start time.Time, resp *sdk.Message, err error) {
 	if a.cfg.LogPath == "" {
 		return
 	}

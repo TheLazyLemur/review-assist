@@ -1,4 +1,4 @@
-package anthropic_test
+package messagesapi_test
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/TheLazyLemur/review-assist/internal/adapters/anthropic"
+	"github.com/TheLazyLemur/review-assist/internal/adapters/messagesapi"
 	"github.com/TheLazyLemur/review-assist/internal/core/review"
 )
 
@@ -51,7 +51,7 @@ func TestAgentLoopsOverTheMessagesAPIUntilTheTaskIsDone(t *testing.T) {
 	}}
 	hs := httptest.NewServer(srv)
 	defer hs.Close()
-	agent := anthropic.New(anthropic.Config{BaseURL: hs.URL, APIKey: "sk-test", Model: "fake"})
+	agent := messagesapi.New(messagesapi.Config{BaseURL: hs.URL, APIKey: "sk-test", Model: "fake"})
 	var gotInput string
 	done := false
 	task := review.Task{
@@ -109,5 +109,39 @@ func TestAgentLoopsOverTheMessagesAPIUntilTheTaskIsDone(t *testing.T) {
 	// ... and the second request replays the history with the assistant turn and the tool_result
 	if len(req.Messages) != 3 || req.Messages[1].Role != "assistant" || req.Messages[2].Content[0].Type != "tool_result" || req.Messages[2].Content[0].ToolUseID != "t1" {
 		t.Errorf("unexpected history %+v", req.Messages)
+	}
+}
+
+func TestEffortTurnsOnAdaptiveThinkingAtThatEffort(t *testing.T) {
+	// given
+	// ... a backend set to high effort, and a server that finishes at once
+	srv := &fakeServer{responses: []string{message("tool_use", `{"type":"tool_use","id":"t1","name":"finish","input":{}}`)}}
+	hs := httptest.NewServer(srv)
+	defer hs.Close()
+	backend := messagesapi.New(messagesapi.Config{BaseURL: hs.URL, APIKey: "k", Model: "fake", Effort: review.EffortHigh})
+	done := false
+
+	// when
+	// ... it runs a task
+	err := backend.Run(context.Background(), review.Task{
+		Name: "a", Prompt: "p", MaxTurns: 4, FinishTool: "finish", Done: func() bool { return done },
+		Tools: []review.Tool{{Name: "finish", Properties: map[string]any{},
+			Call: func(context.Context, json.RawMessage) (string, error) { done = true; return "ok", nil }}},
+	})
+
+	// then
+	// ... the request asks for adaptive thinking at high effort
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req struct {
+		Thinking     struct{ Type string }
+		OutputConfig struct{ Effort string } `json:"output_config"`
+	}
+	if err := json.Unmarshal([]byte(srv.requests[0]), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Thinking.Type != "adaptive" || req.OutputConfig.Effort != "high" {
+		t.Errorf("want adaptive thinking at high effort, got %+v", req)
 	}
 }

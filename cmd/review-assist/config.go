@@ -8,24 +8,26 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/TheLazyLemur/review-assist/internal/core/review"
 )
 
 // Pointers tell "not set" apart from zero values, so a file only overrides
 // what it names.
 type fileConfig struct {
-	Backend   *string `json:"backend"`
-	Anthropic struct {
-		BaseURL *string `json:"base_url"`
-		APIKey  *string `json:"api_key"`
-		Model   *string `json:"model"`
-		Think   *bool   `json:"think"`
-		Log     *string `json:"log"`
-	} `json:"anthropic"`
+	Backend     *string `json:"backend"`
+	MessagesAPI struct {
+		BaseURL *string        `json:"base_url"`
+		APIKey  *string        `json:"api_key"`
+		Model   *string        `json:"model"`
+		Effort  *review.Effort `json:"effort"`
+		Log     *string        `json:"log"`
+	} `json:"messages_api"`
 	ClaudeCode struct {
-		Token      *string `json:"token"`
-		Model      *string `json:"model"`
-		Effort     *string `json:"effort"`
-		Executable *string `json:"executable"`
+		Token      *string        `json:"token"`
+		Model      *string        `json:"model"`
+		Effort     *review.Effort `json:"effort"`
+		Executable *string        `json:"executable"`
 	} `json:"claude_code"`
 	Review struct {
 		Concurrency *int `json:"concurrency"`
@@ -63,11 +65,11 @@ func loadConfigFile(path string, cfg *config) error {
 		return fmt.Errorf("config %s: %w", path, err)
 	}
 	setIf(&cfg.backend, fc.Backend)
-	setIf(&cfg.anthropic.BaseURL, fc.Anthropic.BaseURL)
-	setIf(&cfg.anthropic.APIKey, fc.Anthropic.APIKey)
-	setIf(&cfg.anthropic.Model, fc.Anthropic.Model)
-	setIf(&cfg.anthropic.Think, fc.Anthropic.Think)
-	setIf(&cfg.anthropic.LogPath, fc.Anthropic.Log)
+	setIf(&cfg.messages.BaseURL, fc.MessagesAPI.BaseURL)
+	setIf(&cfg.messages.APIKey, fc.MessagesAPI.APIKey)
+	setIf(&cfg.messages.Model, fc.MessagesAPI.Model)
+	setIf(&cfg.messages.Effort, fc.MessagesAPI.Effort)
+	setIf(&cfg.messages.LogPath, fc.MessagesAPI.Log)
 	setIf(&cfg.claude.Token, fc.ClaudeCode.Token)
 	setIf(&cfg.claude.Model, fc.ClaudeCode.Model)
 	setIf(&cfg.claude.Effort, fc.ClaudeCode.Effort)
