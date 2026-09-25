@@ -14,7 +14,10 @@ import (
 
 type Platform string
 
-const GitHub Platform = "github"
+const (
+	GitHub    Platform = "github"
+	Bitbucket Platform = "bitbucket"
+)
 
 type Repo struct {
 	Platform Platform
