@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+#
+# Tests the tracker dispatcher. Every case runs with TRACKER_DRY_RUN=1, so the gh
+# commands are asserted without touching GitHub.
+
+here=$(cd -- "$(dirname -- "$0")" && pwd)
+tracker="$here/tracker"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+fails=0
+
+pass() { printf 'ok %s\n' "$1"; }
+flunk() { printf 'FAIL %s\n  %s\n' "$1" "$2"; fails=$((fails + 1)); }
+run() { out=$(TRACKER_DRY_RUN=1 "$tracker" "$@" 2>&1); code=$?; }
+run_stdout() { out=$(TRACKER_DRY_RUN=1 "$tracker" "$@" 2>/dev/null); code=$?; }
+has() { case "$out" in *"$2"*) pass "$1" ;; *) flunk "$1" "missing: $2"$'\n'"  in: $out" ;; esac; }
+lacks() { case "$out" in *"$2"*) flunk "$1" "unexpected: $2" ;; *) pass "$1" ;; esac; }
+rejected() { case "$code" in 0) flunk "$1" "expected non-zero exit, got 0" ;; *) pass "$1" ;; esac; }
+accepted() { case "$code" in 0) pass "$1" ;; *) flunk "$1" "exit $code: $out" ;; esac; }
+
+# given
+# ... a feature with a label and two tasks
+# when
+# ... it is created
+run issue.create --title "Bitbucket pull requests cannot be reviewed" --body "Nothing reads bitbucket.org." \
+  --label needs-triage --task "Bitbucket CodeHost reads pull requests" --task "Bitbucket CodeHost posts comments"
+# then
+# ... the feature, then each task, is created with its body on stdin
+accepted "issue.create succeeds"
+has "issue.create creates the feature with its label" "gh issue create --title Bitbucket\ pull\ requests\ cannot\ be\ reviewed --body-file - --label needs-triage"
+has "issue.create sends the feature body on stdin" "stdin: Nothing reads bitbucket.org."
+has "issue.create creates the first task" "--title Bitbucket\ CodeHost\ reads\ pull\ requests"
+has "issue.create points each task at its feature" "stdin: Task of #999."
+# ... and each task is attached as a sub-issue, in order
+has "issue.create attaches the first task" "sub_issues -F sub_issue_id=ID1000"
+has "issue.create attaches the second task" "sub_issues -F sub_issue_id=ID1001"
+
+# given
+# ... the same feature
+# when
+# ... only stdout is read
+run_stdout issue.create --title "T" --body "B" --task "One"
+# then
+# ... stdout is the feature number and nothing else, so it can be captured
+if [ "$out" = 999 ]; then pass "issue.create prints only the feature number"; else flunk "issue.create prints only the feature number" "got: $out"; fi
+
+# given
+# ... a title and a body file with an apostrophe, a quote and newlines
+printf "Line one isn't short.\nSay \"hi\".\n" > "$tmp/body.md"
+# when
+# ... the issue is created from them
+run issue.create --title "O'Brien's mail \$(bounces)" --body-file "$tmp/body.md"
+# then
+# ... the title reaches gh as one quoted word, and the body arrives whole on stdin
+has "issue.create quotes a title with shell characters" "--title O\\'Brien\\'s\\ mail\\ \\\$\\(bounces\\)"
+has "issue.create sends the body file verbatim" "stdin: Line one isn't short."$'\n'"Say \"hi\"."
+
+# given
+# ... a label outside the vocabulary
+# when
+# ... an issue is created with it
+run issue.create --title "T" --body "B" --label bug
+# then
+# ... it is refused, naming the labels in use
+rejected "issue.create rejects an unknown label"
+has "issue.create names the labels in use" "needs-triage ready-for-agent"
+
+# given
+# ... a create with no body
+# when
+# ... it runs
+run issue.create --title "T"
+# then
+# ... it is refused: a body is what lets someone pick the issue up cold
+rejected "issue.create requires a body"
+
+# given
+# ... an issue being taken
+# when
+# ... it is marked in progress with a note
+run issue.update 7 --status in-progress --note "Adapter reads; posting next."
+# then
+# ... you are assigned and the note becomes a comment
+has "in-progress assigns you" "gh issue edit 7 --add-assignee @me"
+has "the note becomes a comment" "gh issue comment 7 --body Adapter\ reads\;\ posting\ next."
+
+# given
+# ... an issue that is finished
+# when
+# ... it is marked done
+run issue.update 7 --status done
+# then
+# ... it closes as completed
+has "done closes as completed" "gh issue close 7 --reason completed"
+
+# given
+# ... an issue given up on, with a reason
+# when
+# ... it is dropped
+run issue.update 7 --status dropped --note "Bitbucket allows self-approval."
+# then
+# ... it closes as not planned, and the reason is the closing comment
+has "dropped closes as not planned" "gh issue close 7 --reason not\ planned --comment Bitbucket\ allows\ self-approval."
+
+# given
+# ... an issue dropped without a reason
+# when
+# ... it runs
+run issue.update 7 --status dropped
+# then
+# ... it is refused
+rejected "dropped requires a note"
+
+# given
+# ... an attempt to set blocked directly
+# when
+# ... it runs
+run issue.update 7 --status blocked
+# then
+# ... it is refused, and points at the blocker link instead
+rejected "blocked cannot be set"
+has "blocked points at issue.link.add" "issue.link.add 7 blocked-by"
+
+# given
+# ... a status outside the vocabulary
+# when
+# ... it runs
+run issue.update 7 --status wibble
+# then
+# ... it is refused, naming the statuses
+rejected "issue.update rejects an unknown status"
+has "issue.update names the statuses" "open in-progress blocked done dropped"
+
+# given
+# ... an update naming nothing
+# when
+# ... it runs
+run issue.update 7
+# then
+# ... it is refused rather than reporting success over nothing
+rejected "issue.update requires a change"
+
+# given
+# ... a title and a new body
+# when
+# ... they are updated together
+run issue.update 7 --title "New claim" --body "New body."
+# then
+# ... one edit carries both, with the body on stdin
+has "issue.update edits title and body in one call" "gh issue edit 7 --body-file - --title New\ claim"
+has "issue.update sends the new body on stdin" "stdin: New body."
+
+# given
+# ... an issue that waits on another
+# when
+# ... the blocker is declared, then removed
+run issue.link.add 12 blocked-by 9
+# then
+# ... a native dependency is added from the blocked side, and removed by the blocker's id
+has "blocked-by adds a native dependency" "gh api --method POST repos/\\{owner\\}/\\{repo\\}/issues/12/dependencies/blocked_by -F issue_id=ID9"
+run issue.link.remove 12 blocked-by 9
+has "blocked-by removes it by the blocker's id" "--method DELETE repos/\\{owner\\}/\\{repo\\}/issues/12/dependencies/blocked_by/ID9"
+
+# given
+# ... two related issues
+# when
+# ... they are linked
+run issue.link.add 12 relates-to 5
+# then
+# ... the link is a line appended to the body
+has "relates-to appends a Related line" "stdin: Body."$'\n\n'"Related: #5"
+
+# given
+# ... an issue found while working on another
+# when
+# ... it is linked
+run issue.link.add 12 discovered-during 5
+# then
+# ... the line reads as the discovery
+has "discovered-during appends its line" "Discovered during #5"
+
+# given
+# ... a soft link that is not in the body
+# when
+# ... it is removed
+run issue.link.remove 12 relates-to 5
+# then
+# ... it is refused rather than rewriting the body for nothing
+rejected "issue.link.remove refuses a link the body lacks"
+
+# given
+# ... a relation outside the vocabulary, and a link to itself
+# when
+# ... each is added
+run issue.link.add 12 duplicates 5
+# then
+# ... both are refused
+rejected "issue.link.add rejects an unknown relation"
+run issue.link.add 12 blocked-by 12
+rejected "issue.link.add rejects a link to itself"
+
+# given
+# ... a new task for an existing feature
+# when
+# ... it is appended
+run task.append 20 "Repositories on bitbucket.org open with the Bitbucket adapter"
+# then
+# ... it is created, pointed at its feature, and attached
+has "task.append creates the task" "--title Repositories\ on\ bitbucket.org\ open\ with\ the\ Bitbucket\ adapter"
+has "task.append points the task at its feature" "stdin: Task of #20."
+has "task.append attaches it to the feature" "issues/20/sub_issues -F sub_issue_id=ID1000"
+
+# given
+# ... two tasks of one feature
+# when
+# ... the second moves before the first
+run task.move 20 22 --before 21
+# then
+# ... the feature's sub-issue order changes by database id
+has "task.move patches the sub-issue order" "issues/20/sub_issues/priority -F sub_issue_id=ID22 -F before_id=ID21"
+
+# given
+# ... a move with no direction
+# when
+# ... it runs
+run task.move 20 22 21
+# then
+# ... it is refused
+rejected "task.move requires --before or --after"
+
+# given
+# ... a delete without confirmation
+# when
+# ... it runs
+run issue.delete 7
+# then
+# ... it is refused, and points at dropping instead
+rejected "issue.delete requires --yes"
+has "issue.delete points at dropping" "--status dropped"
+
+# given
+# ... a label outside the vocabulary
+# when
+# ... it is added
+run issue.label.add 7 awaiting-pr
+# then
+# ... it is refused
+rejected "issue.label.add rejects an unknown label"
+
+# given
+# ... something that is not a number
+# when
+# ... it names an issue
+run issue.get CC-4
+# then
+# ... it is refused
+rejected "an issue is named by its number"
+
+# given
+# ... no method
+# when
+# ... the dispatcher runs
+run
+# then
+# ... it prints the surface and fails
+rejected "no method fails"
+has "no method prints the surface" "board.list"
+
+# given
+# ... a board read filtered by status and label
+# when
+# ... it runs
+run board.list --status done --label ready-for-agent
+# then
+# ... it asks for closed issues, and filters on the derived status and the label
+has "board.list reads closed issues for done" "states: [CLOSED]"
+has "board.list filters on the derived status" '"done" == "" or .status == "done"'
+has "board.list keeps only features" "select(.parent == null)"
+
+printf '\n%s\n' "$([ "$fails" = 0 ] && echo 'all passed' || echo "$fails failed")"
+[ "$fails" = 0 ]
