@@ -7,46 +7,35 @@ import (
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 )
 
-// Model is the port to the language model the agents run on.
-type Model interface {
-	// Start opens a conversation. label names the agent (for logs only).
-	Start(label, system string, tools []ToolSpec) Conversation
+// Agent is the port to whatever runs an agent loop: a Messages API backend
+// that the adapter loops over, or a CLI agent such as Claude Code that loops
+// itself. The backend calls the task's tools; it must offer no others.
+type Agent interface {
+	// Run drives the task until task.Done reports true, the backend gives up,
+	// or MaxTurns model round trips have passed. Not finishing is not an error
+	// here: the caller checks Done.
+	Run(ctx context.Context, task Task) error
 }
 
-// Conversation keeps its own history; the core only sends the next user turn.
-type Conversation interface {
-	// Send adds one user turn (tool results first, then text) and returns
-	// the model's reply.
-	Send(ctx context.Context, in Input) (Reply, error)
+type Task struct {
+	Name     string // names the agent in logs
+	System   string
+	Prompt   string
+	Tools    []Tool
+	MaxTurns int
+	// FinishTool is the tool that ends the task. Backends use it to remind a
+	// model that stops without calling it.
+	FinishTool string
+	Done       func() bool
 }
 
-type ToolSpec struct {
+type Tool struct {
 	Name        string
 	Description string
 	Properties  map[string]any // JSON Schema properties of the input object
 	Required    []string
-}
-
-type Input struct {
-	Results []ToolResult
-	Text    []string
-}
-
-type ToolResult struct {
-	CallID  string
-	Content string
-	IsError bool
-}
-
-type Reply struct {
-	Calls     []ToolCall
-	Truncated bool // the model hit its output limit
-}
-
-type ToolCall struct {
-	ID    string
-	Name  string
-	Input json.RawMessage
+	// Call runs the tool. An error is shown to the model as a failed call.
+	Call func(ctx context.Context, input json.RawMessage) (string, error)
 }
 
 // CodeSource is the port that makes a PR's code readable.

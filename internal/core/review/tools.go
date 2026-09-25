@@ -17,8 +17,15 @@ var refProp = map[string]any{
 	"description": "head = the PR's version (default), base = the target branch before the PR",
 }
 
+type toolSpec struct {
+	Name        string
+	Description string
+	Properties  map[string]any
+	Required    []string
+}
+
 // readTools are the exploration tools. All are read-only.
-var readTools = []ToolSpec{
+var readTools = []toolSpec{
 	{
 		Name:        "list_changed_files",
 		Description: "List the files the PR changes with their status and added/removed line counts.",
@@ -90,7 +97,7 @@ var findingProps = map[string]any{
 	"suggested_comment": map[string]any{"type": "string", "description": "a draft review comment the human MAY post themselves; polite, specific, with a fix direction"},
 }
 
-var submitTool = ToolSpec{
+var submitTool = toolSpec{
 	Name: "submit_findings",
 	Description: "Submit your final findings and end the review. Call exactly once. " +
 		"Submit an empty list if you found nothing real.",

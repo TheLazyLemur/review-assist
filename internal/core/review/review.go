@@ -41,18 +41,18 @@ type Result struct {
 // Reviewer runs agent reviews. It depends only on its ports, and neither port
 // can post to the code host: agents suggest, the human posts.
 type Reviewer struct {
-	model       Model
+	agent       Agent
 	code        CodeSource
 	maxTurns    int
 	concurrency int
 }
 
-func NewReviewer(model Model, code CodeSource, maxTurns, concurrency int) *Reviewer {
-	if model == nil || code == nil || maxTurns < 4 || concurrency < 1 {
-		panic(fmt.Sprintf("review.NewReviewer: bad wiring (model=%v code=%v maxTurns=%d concurrency=%d)",
-			model != nil, code != nil, maxTurns, concurrency))
+func NewReviewer(agent Agent, code CodeSource, maxTurns, concurrency int) *Reviewer {
+	if agent == nil || code == nil || maxTurns < 4 || concurrency < 1 {
+		panic(fmt.Sprintf("review.NewReviewer: bad wiring (agent=%v code=%v maxTurns=%d concurrency=%d)",
+			agent != nil, code != nil, maxTurns, concurrency))
 	}
-	return &Reviewer{model: model, code: code, maxTurns: maxTurns, concurrency: concurrency}
+	return &Reviewer{agent: agent, code: code, maxTurns: maxTurns, concurrency: concurrency}
 }
 
 // Review opens the PR's code and runs the review at the given level.

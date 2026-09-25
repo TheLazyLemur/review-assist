@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // EventKind describes agent progress for the UI.
@@ -26,57 +27,61 @@ type Event struct {
 
 var errNoSubmission = errors.New("agent finished without calling submit_findings")
 
-// runAgent drives one agent until it calls submit_findings. It only ever
-// executes the workspace's read tools.
+// runAgent runs one agent on the Agent port and returns its submission. The
+// agent gets the workspace's read tools and submit_findings, nothing else.
 func (r *Reviewer) runAgent(ctx context.Context, ws *Workspace, name, system, prompt string, emit func(Event)) (submission, error) {
-	conv := r.model.Start(name, system, append(append([]ToolSpec{}, readTools...), submitTool))
-	in := Input{Text: []string{prompt}}
-	nudged := false
-
-	for turn := 0; turn < r.maxTurns; turn++ {
-		if turn == r.maxTurns-3 {
-			in.Text = append(in.Text, "You are nearly out of turns. Call submit_findings now with what you have verified.")
-		}
-		reply, err := conv.Send(ctx, in)
-		if err != nil {
-			return submission{}, fmt.Errorf("model call: %w", err)
-		}
-
-		in = Input{}
-		for _, call := range reply.Calls {
-			if call.Name == submitTool.Name {
-				var sub submission
-				if err := json.Unmarshal(call.Input, &sub); err != nil {
-					in.Results = append(in.Results, ToolResult{CallID: call.ID, Content: "invalid submission JSON: " + err.Error() + "; call submit_findings again", IsError: true})
-					continue
-				}
-				return sub, nil
-			}
-			emit(Event{Agent: name, Kind: EventTool, Detail: toolSummary(call.Name, call.Input)})
-			out, err := ws.exec(ctx, call.Name, call.Input)
-			if err != nil {
-				in.Results = append(in.Results, ToolResult{CallID: call.ID, Content: "error: " + err.Error(), IsError: true})
-				continue
-			}
-			in.Results = append(in.Results, ToolResult{CallID: call.ID, Content: out})
-		}
-
-		if len(in.Results) > 0 {
-			continue
-		}
-		if reply.Truncated {
-			in.Text = []string{"Your reply was cut off. Be brief and call submit_findings."}
-			continue
-		}
-		// The model stopped talking without a tool call. Small models do this;
-		// remind once, then give up.
-		if nudged {
-			return submission{}, errNoSubmission
-		}
-		nudged = true
-		in.Text = []string{"You must finish by calling the submit_findings tool (an empty list is fine). Do not answer in prose."}
+	var (
+		mu        sync.Mutex
+		sub       submission
+		submitted bool
+	)
+	tools := make([]Tool, 0, len(readTools)+1)
+	for _, spec := range readTools {
+		tools = append(tools, Tool{
+			Name: spec.Name, Description: spec.Description, Properties: spec.Properties, Required: spec.Required,
+			Call: func(ctx context.Context, input json.RawMessage) (string, error) {
+				emit(Event{Agent: name, Kind: EventTool, Detail: toolSummary(spec.Name, input)})
+				return ws.exec(ctx, spec.Name, input)
+			},
+		})
 	}
-	return submission{}, fmt.Errorf("agent used all %d turns without submitting", r.maxTurns)
+	tools = append(tools, Tool{
+		Name: submitTool.Name, Description: submitTool.Description, Properties: submitTool.Properties, Required: submitTool.Required,
+		Call: func(_ context.Context, input json.RawMessage) (string, error) {
+			var s submission
+			if err := json.Unmarshal(input, &s); err != nil {
+				return "", fmt.Errorf("invalid submission JSON: %v; call submit_findings again", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if submitted {
+				return "", errors.New("findings were already submitted; stop now")
+			}
+			sub, submitted = s, true
+			return "Findings recorded. You are done: stop now.", nil
+		},
+	})
+
+	err := r.agent.Run(ctx, Task{
+		Name: name, System: system, Prompt: prompt, Tools: tools, MaxTurns: r.maxTurns,
+		FinishTool: submitTool.Name,
+		Done: func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return submitted
+		},
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if submitted {
+		// A backend may still error while winding down after the submission;
+		// the findings are what matter.
+		return sub, nil
+	}
+	if err != nil {
+		return submission{}, err
+	}
+	return submission{}, errNoSubmission
 }
 
 func toolSummary(name string, input json.RawMessage) string {

@@ -12,28 +12,35 @@ import (
 	"github.com/TheLazyLemur/review-assist/internal/core/review"
 )
 
-// scriptedModel replays tool calls and records what the agent sent.
-type scriptedModel struct {
-	replies []review.Reply
+type toolCall struct {
+	Name  string
+	Input json.RawMessage
+}
+
+// scriptedAgent is a backend that makes a fixed sequence of tool calls.
+type scriptedAgent struct {
+	calls   []toolCall
 	tools   []string
-	inputs  []review.Input
+	results []string
 }
 
-func (m *scriptedModel) Start(_, _ string, tools []review.ToolSpec) review.Conversation {
-	for _, t := range tools {
-		m.tools = append(m.tools, t.Name)
+func (a *scriptedAgent) Run(ctx context.Context, task review.Task) error {
+	byName := map[string]review.Tool{}
+	for _, t := range task.Tools {
+		a.tools = append(a.tools, t.Name)
+		byName[t.Name] = t
 	}
-	return m
-}
-
-func (m *scriptedModel) Send(_ context.Context, in review.Input) (review.Reply, error) {
-	m.inputs = append(m.inputs, in)
-	if len(m.replies) == 0 {
-		return review.Reply{}, errors.New("script exhausted")
+	for _, c := range a.calls {
+		out, err := byName[c.Name].Call(ctx, c.Input)
+		if err != nil {
+			out = "error: " + err.Error()
+		}
+		a.results = append(a.results, out)
+		if task.Done() {
+			return nil
+		}
 	}
-	r := m.replies[0]
-	m.replies = m.replies[1:]
-	return r, nil
+	return nil
 }
 
 // noCode is a repository where no commit could be fetched.
@@ -53,40 +60,37 @@ func (noCode) Grep(context.Context, string, string, string, bool) ([]string, err
 }
 func (noCode) Log(context.Context, string, string, int) (string, error) { return "", errors.New("no") }
 
-func call(id, name, input string) review.ToolCall {
-	return review.ToolCall{ID: id, Name: name, Input: json.RawMessage(input)}
-}
-
 func TestQuickReviewExploresWithReadToolsAndReturnsAnchoredSuggestions(t *testing.T) {
 	// given
-	// ... a PR whose commits cannot be fetched, and a model that reads the diff then submits one finding on an added line
+	// ... a PR whose commits cannot be fetched, and an agent that reads the diff then submits one finding on an added line
 	files, err := diff.Parse("diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,2 @@\n x := 1\n-y := x\n+y := x / 0\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	details := &pr.Details{PR: &pr.PR{Summary: pr.Summary{Number: 7, Title: "tweak"}, HeadSHA: "h", BaseSHA: "b"}, Files: files}
-	model := &scriptedModel{replies: []review.Reply{
-		{Calls: []review.ToolCall{call("t1", "get_diff", `{"path":"a.go"}`)}},
-		{Calls: []review.ToolCall{call("t2", "submit_findings", `{"findings":[{"path":"a.go","line":2,"side":"RIGHT","severity":"blocking","confidence":"high","title":"Division by zero","explanation":"Always panics.","suggested_comment":"This divides by zero."}]}`)}},
+	agent := &scriptedAgent{calls: []toolCall{
+		{Name: "get_diff", Input: json.RawMessage(`{"path":"a.go"}`)},
+		{Name: "submit_findings", Input: json.RawMessage(`{"findings":[{"path":"a.go","line":2,"side":"RIGHT","severity":"blocking","confidence":"high","title":"Division by zero","explanation":"Always panics.","suggested_comment":"This divides by zero."}]}`)},
+		{Name: "get_diff", Input: json.RawMessage(`{}`)}, // never reached: the task is done
 	}}
-	reviewer := review.NewReviewer(model, noCode{}, 5, 1)
+	reviewer := review.NewReviewer(agent, noCode{}, 5, 1)
 
 	// when
 	// ... a quick review runs
 	res, err := reviewer.Review(context.Background(), pr.Repo{Host: "h", Owner: "o", Name: "n"}, details, review.LevelQuick, func(review.Event) {})
 
 	// then
-	// ... the model received the annotated diff as the tool result
+	// ... the diff tool returned the annotated diff, and the run stopped at the submission
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(model.inputs) != 2 || len(model.inputs[1].Results) != 1 || !strings.Contains(model.inputs[1].Results[0].Content, `R2     +y := x / 0`) {
-		t.Fatalf("second turn should carry the annotated diff, got %+v", model.inputs)
+	if len(agent.results) != 2 || !strings.Contains(agent.results[0], `R2     +y := x / 0`) {
+		t.Fatalf("want the annotated diff then the submission, got %q", agent.results)
 	}
 
 	// ... only read tools and submit_findings were offered
 	want := "list_changed_files,get_diff,read_file,list_dir,grep,git_log,pr_description,submit_findings"
-	if got := strings.Join(model.tools, ","); got != want {
+	if got := strings.Join(agent.tools, ","); got != want {
 		t.Errorf("tools: want %s, got %s", want, got)
 	}
 
