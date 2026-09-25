@@ -234,9 +234,9 @@ func (m *Model) actionsMenu() *menuModal {
 			return m.act(fmt.Sprintf("reopen #%d", n), true, func(ctx context.Context) error { return gc.Reopen(ctx, n) })
 		}})
 	}
-	if m.deps.LocalRepo {
+	if m.deps.Remote != "" {
 		items = append(items, menuItem{"k", "Check out branch locally", func() tea.Cmd {
-			m.confirmAct(fmt.Sprintf("Run `gh pr checkout %d` in %s?", n, m.deps.Cwd), fmt.Sprintf("checkout #%d", n),
+			m.confirmAct(fmt.Sprintf("Check out the branch of #%d in %s?", n, m.deps.Cwd), fmt.Sprintf("checkout #%d", n),
 				func(ctx context.Context) error { return gc.Checkout(ctx, n) })
 			return nil
 		}})

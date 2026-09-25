@@ -50,6 +50,7 @@ func TestPickRemote(t *testing.T) {
 		remotes []remote
 		tracked string
 		want    pr.Repo
+		picked  string
 		err     string
 	}{
 		{
@@ -60,6 +61,7 @@ func TestPickRemote(t *testing.T) {
 			},
 			tracked: "upstream",
 			want:    pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "team", Name: "app"},
+			picked:  "upstream",
 		},
 		{
 			name: "origin when nothing is tracked",
@@ -67,7 +69,8 @@ func TestPickRemote(t *testing.T) {
 				{"fork", "github.com", "someone/fork"},
 				{"origin", "github.com", "team/app"},
 			},
-			want: pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "team", Name: "app"},
+			want:   pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "team", Name: "app"},
+			picked: "origin",
 		},
 		{
 			name: "the only remote on a code host when there is no origin",
@@ -75,13 +78,15 @@ func TestPickRemote(t *testing.T) {
 				{"mirror", "gitlab.com", "team/app"},
 				{"upstream", "github.com", "team/app"},
 			},
-			want: pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "team", Name: "app"},
+			want:   pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "team", Name: "app"},
+			picked: "upstream",
 		},
 		{
 			name:    "scheduler on develop tracking acme/develop",
 			remotes: twoBitbucket,
 			tracked: "acme",
 			want:    pr.Repo{Platform: pr.Bitbucket, Hostname: "bitbucket.org", Owner: "acme", Name: "scheduler"},
+			picked:  "acme",
 		},
 		{
 			name:    "scheduler on a branch that tracks nothing",
@@ -110,21 +115,25 @@ func TestPickRemote(t *testing.T) {
 			name:    "github.com is GitHub",
 			remotes: []remote{{"origin", "github.com", "TheLazyLemur/review-assist"}},
 			want:    pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "TheLazyLemur", Name: "review-assist"},
+			picked:  "origin",
 		},
 		{
 			name:    "a GitHub Enterprise hostname keeps its hostname",
 			remotes: []remote{{"origin", "ghe.example.com", "acme/widgets"}},
 			want:    pr.Repo{Platform: pr.GitHub, Hostname: "ghe.example.com", Owner: "acme", Name: "widgets"},
+			picked:  "origin",
 		},
 		{
 			name:    "bitbucket.org is Bitbucket",
 			remotes: []remote{{"origin", "bitbucket.org", "acme/storefront"}},
 			want:    pr.Repo{Platform: pr.Bitbucket, Hostname: "bitbucket.org", Owner: "acme", Name: "storefront"},
+			picked:  "origin",
 		},
 		{
 			name:    "any other hostname is not a supported code host",
 			remotes: []remote{{"origin", "gitlab.com", "team/app"}, {"github", "github.com", "team/app"}},
 			want:    pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "team", Name: "app"},
+			picked:  "github",
 		},
 	}
 	for _, form := range urlForms {
@@ -139,15 +148,18 @@ func TestPickRemote(t *testing.T) {
 
 				// when
 				// ... the remote is picked
-				repo, err := gitrepo.PickRemote(remotes, tc.tracked, fakePlatforms)
+				repo, picked, err := gitrepo.PickRemote(remotes, tc.tracked, fakePlatforms)
 
 				// then
-				// ... the rule gives the case's repository, or refuses with its message
+				// ... the rule gives the case's repository and remote, or refuses with its message
 				if errText(err) != tc.err {
 					t.Fatalf("error: want %q, got %q", tc.err, errText(err))
 				}
 				if repo != tc.want {
 					t.Fatalf("repo: want %+v, got %+v", tc.want, repo)
+				}
+				if picked != tc.picked {
+					t.Fatalf("remote: want %q, got %q", tc.picked, picked)
 				}
 			})
 		}
@@ -164,7 +176,7 @@ func TestPickRemoteReportsAFailedPlatformLookupWithItsHostname(t *testing.T) {
 
 	// when
 	// ... the remote is picked
-	_, err := gitrepo.PickRemote(remotes, "", failing)
+	_, _, err := gitrepo.PickRemote(remotes, "", failing)
 
 	// then
 	// ... the lookup's error comes back, led by the hostname
@@ -191,7 +203,7 @@ func TestPickRemoteDoesNotLookUpRemotesTheRuleDoesNotReach(t *testing.T) {
 
 	// when
 	// ... the remote is picked
-	repo, err := gitrepo.PickRemote(remotes, "", onlyGitHubDotCom)
+	repo, _, err := gitrepo.PickRemote(remotes, "", onlyGitHubDotCom)
 
 	// then
 	// ... origin is picked without looking up the mirror
@@ -211,7 +223,7 @@ func TestNoCodeHostRefusalShowsARemoteItCannotParseByItsURL(t *testing.T) {
 
 	// when
 	// ... the remote is picked
-	_, err := gitrepo.PickRemote(remotes, "", fakePlatforms)
+	_, _, err := gitrepo.PickRemote(remotes, "", fakePlatforms)
 
 	// then
 	// ... the local path is listed as it is
@@ -228,7 +240,7 @@ func TestNoCodeHostRefusalLeavesOutCredentialsInAURL(t *testing.T) {
 
 	// when
 	// ... the remote is picked
-	_, err := gitrepo.PickRemote(remotes, "", fakePlatforms)
+	_, _, err := gitrepo.PickRemote(remotes, "", fakePlatforms)
 
 	// then
 	// ... the URL is listed without its user or token

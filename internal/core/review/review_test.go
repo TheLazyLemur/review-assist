@@ -46,7 +46,7 @@ func (a *scriptedAgent) Run(ctx context.Context, task review.Task) error {
 // noCode is a repository where no commit could be fetched.
 type noCode struct{}
 
-func (noCode) Open(context.Context, pr.Repo, int, string, string) (review.Code, error) {
+func (noCode) Open(context.Context, pr.Repo, *pr.PR) (review.Code, error) {
 	return noCode{}, nil
 }
 func (noCode) Location() string                                         { return "nowhere" }

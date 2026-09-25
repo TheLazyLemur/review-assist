@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/TheLazyLemur/review-assist/internal/adapters/bitbucket"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/claudecode"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/github"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/gitrepo"
@@ -28,15 +30,24 @@ const (
 	backendClaudeCode  = "claude-code"
 
 	defaultMessagesModel = "deepseek-v4.1-flash:cloud"
+
+	bitbucketAPI = "https://api.bitbucket.org/2.0"
 )
 
 type config struct {
 	backend     string
 	messages    messagesapi.Config
 	claude      claudecode.Config // WorkDir is set by run
+	bitbucket   bitbucketConfig
 	maxTurns    int
 	concurrency int
 	target      string // optional PR argument
+	file        string // the config file's path, for messages
+}
+
+type bitbucketConfig struct {
+	email    string // the Atlassian account email, not the Bitbucket username
+	apiToken string
 }
 
 func (c config) newBackend(cacheDir string) (review.Backend, string, error) {
@@ -79,7 +90,11 @@ func run(args []string) error {
 		return err
 	}
 	runner := github.ExecRunner{Dir: cwd}
-	repo, openPR, localRepo, err := resolveTarget(context.Background(), cwd, runner, cfg.target)
+	repo, openPR, remote, err := resolveTarget(context.Background(), cwd, runner, cfg.target)
+	if err != nil {
+		return err
+	}
+	host, err := newCodeHost(cfg, repo, remote, cwd, runner)
 	if err != nil {
 		return err
 	}
@@ -93,7 +108,7 @@ func run(args []string) error {
 		return err
 	}
 
-	prs := pr.NewService(github.NewClient(runner, repo), repo)
+	prs := pr.NewService(host, repo)
 	reviews := review.NewService(
 		backend,
 		gitrepo.Source{Cwd: cwd, CacheDir: cache},
@@ -104,12 +119,53 @@ func run(args []string) error {
 		Reviews:   reviews,
 		ModelName: modelName,
 		Cwd:       cwd,
-		LocalRepo: localRepo,
+		Remote:    remote,
 		OpenPR:    openPR,
 		Dark:      lipgloss.HasDarkBackground(os.Stdin, os.Stdout),
 	})
 	_, err = tea.NewProgram(app).Run()
 	return err
+}
+
+// newCodeHost gives the repository the code host of its platform. remote is
+// "" when the cwd is not a clone of the repository.
+func newCodeHost(cfg config, repo pr.Repo, remote, cwd string, runner github.Runner) (pr.CodeHost, error) {
+	switch repo.Platform {
+	case pr.GitHub:
+		return github.NewClient(runner, repo), nil
+	case pr.Bitbucket:
+		if cfg.bitbucket.email == "" || cfg.bitbucket.apiToken == "" {
+			return nil, fmt.Errorf("%s is on Bitbucket, which needs an Atlassian account email and an API token: "+
+				"set bitbucket.email and bitbucket.api_token in %s, "+
+				"or REVIEW_ASSIST_BITBUCKET_EMAIL and REVIEW_ASSIST_BITBUCKET_API_TOKEN", repo.Qualified(), cfg.file)
+		}
+		// With no clone, Remote and Dir stay empty and Checkout refuses by name.
+		opts := bitbucket.Options{Open: openBrowser}
+		if remote != "" {
+			opts.Remote, opts.Dir = remote, cwd
+		}
+		return bitbucket.NewClient(bitbucketAPI, cfg.bitbucket.email, cfg.bitbucket.apiToken, repo, opts), nil
+	default:
+		return nil, fmt.Errorf("%s: unknown platform %q", repo.Qualified(), repo.Platform)
+	}
+}
+
+// openBrowser leaves the opener's output unattached, so it cannot draw over
+// the TUI.
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("open %s: %w", url, err)
+	}
+	return nil
 }
 
 // OLLAMA_HOST and ANTHROPIC_API_KEY are shared with other tools, so they only
@@ -124,6 +180,7 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 		},
 		maxTurns:    40,
 		concurrency: 4,
+		file:        configFile,
 	}
 	if err := loadConfigFile(configFile, &cfg); err != nil {
 		return cfg, err
@@ -131,11 +188,13 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 	// Model and effort apply to whichever backend ends up chosen.
 	model, effort := getenv("REVIEW_ASSIST_MODEL"), getenv("REVIEW_ASSIST_EFFORT")
 	for env, dst := range map[string]*string{
-		"REVIEW_ASSIST_BACKEND":      &cfg.backend,
-		"REVIEW_ASSIST_BASE_URL":     &cfg.messages.BaseURL,
-		"REVIEW_ASSIST_API_KEY":      &cfg.messages.APIKey,
-		"REVIEW_ASSIST_LOG":          &cfg.messages.LogPath,
-		"REVIEW_ASSIST_CLAUDE_TOKEN": &cfg.claude.Token,
+		"REVIEW_ASSIST_BACKEND":             &cfg.backend,
+		"REVIEW_ASSIST_BASE_URL":            &cfg.messages.BaseURL,
+		"REVIEW_ASSIST_API_KEY":             &cfg.messages.APIKey,
+		"REVIEW_ASSIST_LOG":                 &cfg.messages.LogPath,
+		"REVIEW_ASSIST_CLAUDE_TOKEN":        &cfg.claude.Token,
+		"REVIEW_ASSIST_BITBUCKET_EMAIL":     &cfg.bitbucket.email,
+		"REVIEW_ASSIST_BITBUCKET_API_TOKEN": &cfg.bitbucket.apiToken,
 	} {
 		if v := getenv(env); v != "" {
 			*dst = v
@@ -159,13 +218,16 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 
 With no PR, lists pull requests of the repository found from the git remotes of
 the current directory.
-PR may be a number (in the current repository), a PR URL on github.com or a
-GitHub Enterprise host, OWNER/REPO#N or HOST/OWNER/REPO#N.
+PR may be a number (in the current repository), a PR URL on github.com, a
+GitHub Enterprise host or bitbucket.org, OWNER/REPO#N or HOST/OWNER/REPO#N.
 
 Settings come from the config file, then REVIEW_ASSIST_* env vars, then flags;
 the last one set wins. Config file: `+configFile+`
 The claude-code backend's token (from `+"`claude setup-token`"+`) is set only in
 the file (claude_code.token) or REVIEW_ASSIST_CLAUDE_TOKEN, never by flag.
+Bitbucket's Atlassian account email and API token are set the same way:
+bitbucket.email and bitbucket.api_token, or REVIEW_ASSIST_BITBUCKET_EMAIL and
+REVIEW_ASSIST_BITBUCKET_API_TOKEN.
 
 flags:
 `)
@@ -221,27 +283,24 @@ func normaliseBaseURL(u string) string {
 	return strings.TrimSuffix(u, "/")
 }
 
-func resolveTarget(ctx context.Context, cwd string, runner github.Runner, target string) (pr.Repo, int, bool, error) {
-	repo, openPR, localRepo, err := findTarget(ctx, cwd, runner, target)
-	if err == nil && repo.Platform == pr.Bitbucket {
-		return pr.Repo{}, 0, false, fmt.Errorf("%s is on Bitbucket, which is not supported yet", repo.Qualified())
-	}
-	return repo, openPR, localRepo, err
-}
-
-func findTarget(ctx context.Context, cwd string, runner github.Runner, target string) (repo pr.Repo, openPR int, localRepo bool, err error) {
-	local, localErr := gitrepo.FindRemote(ctx, cwd, github.Platforms(ctx, runner))
+// resolveTarget's remote is the one the repository was taken from, or "" when
+// the cwd is not a clone of the repository.
+func resolveTarget(ctx context.Context, cwd string, runner github.Runner, target string) (repo pr.Repo, openPR int, remote string, err error) {
+	local, localRemote, localErr := gitrepo.FindRemote(ctx, cwd, github.Platforms(ctx, runner))
 	if target == "" {
-		return local, 0, localErr == nil, localErr
+		return local, 0, localRemote, localErr
 	}
 	if n, convErr := strconv.Atoi(target); convErr == nil {
-		return local, n, localErr == nil, localErr
+		return local, n, localRemote, localErr
 	}
 	repo, n, err := pr.ParseRef(target)
 	if err != nil {
-		return pr.Repo{}, 0, false, err
+		return pr.Repo{}, 0, "", err
 	}
-	return repo, n, localErr == nil && sameRepo(local, repo), nil
+	if localErr != nil || !sameRepo(local, repo) {
+		return repo, n, "", nil
+	}
+	return repo, n, localRemote, nil
 }
 
 // sameRepo ignores case in hostname, owner and name: a remote URL and a pasted

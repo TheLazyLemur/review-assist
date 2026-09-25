@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"reflect"
 	"slices"
 	"strconv"
@@ -69,7 +71,7 @@ func TestEveryRequestCarriesBasicAuthOfEmailAndToken(t *testing.T) {
 			fmt.Fprintf(w, `{"values":[%s],"next":"%s%s?state=OPEN&pagelen=50&page=2"}`, pullRequestJSON(1, "OPEN", "dan"), srv.URL, listPath)
 		}
 	})
-	c := bitbucket.NewClient(srv.URL, "dan@example.com", "s3cret", repo)
+	c := bitbucket.NewClient(srv.URL, "dan@example.com", "s3cret", repo, bitbucket.Options{})
 
 	// when
 	// ... the viewer is read and the pull requests are listed
@@ -94,7 +96,7 @@ func TestUnauthorisedErrorLeadsWithBitbucketsMessage(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, `{"type":"error","error":{"message":"Invalid credentials"}}`)
 	})
-	c := bitbucket.NewClient(srv.URL, "dan@example.com", "wrong", repo)
+	c := bitbucket.NewClient(srv.URL, "dan@example.com", "wrong", repo, bitbucket.Options{})
 
 	// when
 	// ... pull requests are listed
@@ -114,7 +116,7 @@ func TestErrorFallsBackToTheStatusTextForAnUnexpectedBody(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprint(w, "<html>denied</html>")
 	})
-	c := bitbucket.NewClient(srv.URL, "dan@example.com", "wrong", repo)
+	c := bitbucket.NewClient(srv.URL, "dan@example.com", "wrong", repo, bitbucket.Options{})
 
 	// when
 	// ... pull requests are listed
@@ -151,7 +153,7 @@ func TestListRequestsTheBitbucketStatesForEachFilter(t *testing.T) {
 				}
 				fmt.Fprintf(w, `{"values":[%s]}`, strings.Join(values, ","))
 			})
-			c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+			c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 			// when
 			// ... pull requests are listed with the filter
@@ -185,7 +187,7 @@ func TestListMapsPullRequestFields(t *testing.T) {
 			"source":{"branch":{"name":"feat/basket"}},"destination":{"branch":{"name":"main"}},
 			"updated_on":"2026-09-24T10:11:12.123456+00:00"}]}`)
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... open pull requests are listed
@@ -219,7 +221,7 @@ func TestListFollowsNextAcrossPages(t *testing.T) {
 		fmt.Fprintf(w, `{"values":[%s,%s],"next":"%s%s?state=OPEN&pagelen=50&page=2"}`,
 			pullRequestJSON(1, "OPEN", "dan"), pullRequestJSON(2, "OPEN", "dan"), srv.URL, listPath)
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... open pull requests are listed
@@ -259,7 +261,7 @@ func TestListStopsAtOneHundredPullRequests(t *testing.T) {
 		}
 		fmt.Fprintf(w, `{"values":[%s],"next":"%s%s?page=%d"}`, strings.Join(values, ","), srv.URL, listPath, page+1)
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... open pull requests are listed
@@ -289,7 +291,7 @@ func TestListDoesNotSendCredentialsToAnotherHost(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"values":[],"next":"%s%s?page=2"}`, other.URL, listPath)
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... open pull requests are listed
@@ -311,7 +313,7 @@ func TestListRejectsAnUnknownState(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"values":[%s]}`, pullRequestJSON(1, "QUEUED", "dan"))
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... open pull requests are listed
@@ -335,7 +337,7 @@ func TestViewerOwnsThePullRequestsTheyOpened(t *testing.T) {
 			fmt.Fprint(w, `{"values":[{"id":1,"state":"OPEN","author":{"nickname":"dan","display_name":"Dan R","account_id":"712020:abc"}}]}`)
 		}
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 	viewer, err := c.Viewer(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -381,7 +383,7 @@ func TestGetMapsPullRequestFields(t *testing.T) {
 		}
 		fmt.Fprint(w, pullRequestWithParticipants(""))
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the pull request is read
@@ -414,7 +416,7 @@ func TestGetTurnsParticipantDecisionsIntoVerdicts(t *testing.T) {
 			{"user":{"nickname":"bob"},"state":"changes_requested","participated_on":"2026-09-22T09:00:00+00:00"},
 			{"user":{"nickname":"cat"},"state":null,"participated_on":"2026-09-23T09:00:00+00:00"}`))
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the pull request is read
@@ -440,7 +442,7 @@ func TestGetRejectsAnUnknownParticipantState(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, pullRequestWithParticipants(`{"user":{"nickname":"ann"},"state":"vetoed"}`))
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the pull request is read
@@ -481,7 +483,7 @@ diff --git a/main.go b/main.go
 			http.NotFound(w, r)
 		}
 	})
-	c := bitbucket.NewClient(srv.URL, "dan@example.com", "s3cret", repo)
+	c := bitbucket.NewClient(srv.URL, "dan@example.com", "s3cret", repo, bitbucket.Options{})
 
 	// when
 	// ... the diff is read
@@ -526,7 +528,7 @@ func TestCommentsFollowsNextAcrossPages(t *testing.T) {
 		fmt.Fprintf(w, `{"values":[%s,%s],"next":"%s%s/comments?pagelen=50&page=2"}`,
 			commentJSON(1, ""), commentJSON(2, ""), srv.URL, prPath)
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the comments are read
@@ -564,7 +566,7 @@ func TestCommentsMapWhereEachPoints(t *testing.T) {
 			commentJSON(7, `,"inline":{"path":"f.go","from":null,"to":9,"start_from":null,"start_to":9}`),
 			commentJSON(8, `,"inline":{"path":"g.go","from":null,"to":9,"start_from":9,"start_to":null}`))
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the comments are read
@@ -597,7 +599,7 @@ func TestCommentsLinkAReplyToItsParent(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"values":[%s,%s]}`, commentJSON(1, ""), commentJSON(2, `,"parent":{"id":1}`))
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the comments are read
@@ -622,7 +624,7 @@ func TestCommentsLeaveOutDeletedOnes(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"values":[%s,%s]}`, commentJSON(1, ""), commentJSON(2, `,"deleted":true`))
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the comments are read
@@ -646,7 +648,7 @@ func TestCommentsLeaveOutOutdatedOnes(t *testing.T) {
 			commentJSON(1, `,"inline":{"path":"a.go","from":null,"to":3,"outdated":false}`),
 			commentJSON(2, `,"inline":{"path":"a.go","from":null,"to":3,"outdated":true}`))
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the comments are read
@@ -668,7 +670,7 @@ func TestCommentsLeaveOutPendingOnes(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"values":[%s,%s]}`, commentJSON(1, `,"pending":false`), commentJSON(2, `,"pending":true`))
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the comments are read
@@ -690,7 +692,7 @@ func TestCommentsRejectAnInlineCommentWithNoPath(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"values":[%s]}`, commentJSON(42, `,"inline":{"from":null,"to":3}`))
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the comments are read
@@ -709,7 +711,7 @@ func TestCommentsRejectARangeStartWithNoEndLine(t *testing.T) {
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"values":[%s]}`, commentJSON(42, `,"inline":{"path":"a.go","from":null,"to":null,"start_to":3}`))
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the comments are read
@@ -741,7 +743,7 @@ func record(t *testing.T, status func(r *http.Request) int) (*bitbucket.Client, 
 		sent = append(sent, s)
 		w.WriteHeader(status(r))
 	})
-	return bitbucket.NewClient(srv.URL, "e", "t", repo), &sent
+	return bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{}), &sent
 }
 
 func accept(*http.Request) int { return http.StatusOK }
@@ -1000,7 +1002,7 @@ func TestPostCommentFailsWhenThePostIsRedirected(t *testing.T) {
 			http.Redirect(w, r, "/moved", http.StatusFound)
 		}
 	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... a comment is posted
@@ -1010,5 +1012,415 @@ func TestPostCommentFailsWhenThePostIsRedirected(t *testing.T) {
 	// ... it fails naming the method rather than reporting a comment that was never posted
 	if err == nil || !strings.Contains(err.Error(), "POST") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestMergeSendsTheBitbucketStrategyForEachMethod(t *testing.T) {
+	tests := []struct {
+		method       pr.MergeMethod
+		wantStrategy string
+	}{
+		{pr.MergeCommit, "merge_commit"},
+		{pr.Squash, "squash"},
+		{pr.Rebase, "rebase_fast_forward"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.method), func(t *testing.T) {
+			// given
+			// ... a server that records requests
+			c, sent := record(t, accept)
+
+			// when
+			// ... the pull request is merged with the method
+			err := c.Merge(context.Background(), 7, tt.method)
+
+			// then
+			// ... it posts the matching merge_strategy to merge
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []sentRequest{{Method: "POST", Path: prPath + "/merge", ContentType: "application/json", Body: map[string]any{
+				"merge_strategy": tt.wantStrategy,
+			}}}
+			if !reflect.DeepEqual(*sent, want) {
+				t.Errorf("want %+v, got %+v", want, *sent)
+			}
+		})
+	}
+}
+
+const taskPath = prPath + "/merge/task-status/t1"
+
+// mergeTask answers the merge with 202 and a Location of its task status,
+// which reports PENDING until the pending polls are used up and then finish.
+// The client waits at most wait for the task.
+func mergeTask(t *testing.T, pending int, wait time.Duration, finish http.HandlerFunc) (*bitbucket.Client, *[]string) {
+	t.Helper()
+	var polls []string
+	var srv *httptest.Server
+	srv = serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case prPath + "/merge":
+			w.Header().Set("Location", srv.URL+taskPath)
+			w.WriteHeader(http.StatusAccepted)
+		case taskPath:
+			polls = append(polls, r.Method)
+			if len(polls) <= pending {
+				_, _ = fmt.Fprint(w, `{"task_status":"PENDING"}`)
+				return
+			}
+			finish(w, r)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	})
+	return bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{PollInterval: time.Millisecond, MergeWait: wait}), &polls
+}
+
+func TestMergeAnsweredWithATaskPollsUntilItSucceeds(t *testing.T) {
+	// given
+	// ... a server that queues the merge as a task that is pending twice, then succeeds
+	c, polls := mergeTask(t, 2, time.Minute, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"task_status":"SUCCESS"}`)
+	})
+
+	// when
+	// ... the pull request is merged
+	err := c.Merge(context.Background(), 7, pr.MergeCommit)
+
+	// then
+	// ... it succeeds after polling the task status three times
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(*polls, []string{"GET", "GET", "GET"}) {
+		t.Errorf("want 3 GET polls, got %v", *polls)
+	}
+}
+
+func TestMergeWhoseTaskFailsReturnsBitbucketsReason(t *testing.T) {
+	// given
+	// ... a server that queues the merge as a task that fails with a conflict
+	c, _ := mergeTask(t, 1, time.Minute, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = fmt.Fprint(w, `{"type":"error","error":{"message":"Merge conflict in a.go"}}`)
+	})
+
+	// when
+	// ... the pull request is merged
+	err := c.Merge(context.Background(), 7, pr.Squash)
+
+	// then
+	// ... the error starts with Bitbucket's reason
+	if err == nil || !strings.HasPrefix(err.Error(), "Merge conflict in a.go") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestMergeWhoseTaskStaysPendingFailsAtTheWaitCap(t *testing.T) {
+	// given
+	// ... a server whose merge task never leaves PENDING, and a client that waits 50ms
+	c, _ := mergeTask(t, math.MaxInt, 50*time.Millisecond, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the task never finishes")
+	})
+
+	// when
+	// ... the pull request is merged with a context that never ends
+	err := c.Merge(context.Background(), 7, pr.MergeCommit)
+
+	// then
+	// ... it fails with the deadline, saying the merge is still pending
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "pending") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestMergeDoesNotPollATaskOnAnotherHost(t *testing.T) {
+	// given
+	// ... a server that queues the merge with a Location on a second server
+	var elsewhere []string
+	other := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		elsewhere = append(elsewhere, r.Method+" "+r.URL.Path)
+	})
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", other.URL+taskPath)
+		w.WriteHeader(http.StatusAccepted)
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{PollInterval: time.Millisecond})
+
+	// when
+	// ... the pull request is merged
+	err := c.Merge(context.Background(), 7, pr.MergeCommit)
+
+	// then
+	// ... it fails and the second server receives nothing
+	if err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("got %v", err)
+	}
+	if len(elsewhere) != 0 {
+		t.Errorf("want no requests to the other host, got %v", elsewhere)
+	}
+}
+
+func TestCloseDeclinesThePullRequest(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... the pull request is closed
+	err := c.Close(context.Background(), 7)
+
+	// then
+	// ... the request is a POST to decline
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{{Method: "POST", Path: prPath + "/decline"}}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestReopenFailsNamingReopeningWithoutARequest(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... the pull request is reopened
+	err := c.Reopen(context.Background(), 7)
+
+	// then
+	// ... it fails naming reopening and sends nothing
+	if err == nil || !strings.Contains(err.Error(), "reopen") {
+		t.Fatalf("got %v", err)
+	}
+	if len(*sent) != 0 {
+		t.Errorf("want no requests, got %+v", *sent)
+	}
+}
+
+func TestMarkReadyPutsDraftFalse(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... the pull request is marked ready
+	err := c.MarkReady(context.Background(), 7)
+
+	// then
+	// ... it puts draft false on the pull request
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{{Method: "PUT", Path: prPath, ContentType: "application/json", Body: map[string]any{"draft": false}}}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func TestConvertToDraftPutsDraftTrue(t *testing.T) {
+	// given
+	// ... a server that records requests
+	c, sent := record(t, accept)
+
+	// when
+	// ... the pull request is converted to a draft
+	err := c.ConvertToDraft(context.Background(), 7)
+
+	// then
+	// ... it puts draft true on the pull request
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []sentRequest{{Method: "PUT", Path: prPath, ContentType: "application/json", Body: map[string]any{"draft": true}}}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("want %+v, got %+v", want, *sent)
+	}
+}
+
+func git(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// pullRequestFrom is pull request 7 from branch of source into main of
+// acme/shop.
+func pullRequestFrom(source, branch string) string {
+	return fmt.Sprintf(`{"id":7,"title":"t","state":"OPEN","author":{"nickname":"dan"},
+		"source":{"branch":{"name":%q},"repository":{"full_name":%q}},
+		"destination":{"branch":{"name":"main"},"repository":{"full_name":"acme/shop"}}}`, branch, source)
+}
+
+// cloneWithBranch is a clone on main whose remote "upstream" is a bare
+// repository with main and branch at the same commit, and a client whose pull
+// request 7 comes from branch.
+func cloneWithBranch(t *testing.T, branch string) (*bitbucket.Client, string) {
+	t.Helper()
+	remote := t.TempDir()
+	git(t, remote, "init", "--bare", "-b", "main")
+	clone := t.TempDir()
+	git(t, clone, "init", "-b", "main")
+	git(t, clone, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "base")
+	git(t, clone, "remote", "add", "upstream", remote)
+	git(t, clone, "push", "upstream", "main", "main:"+branch)
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, pullRequestFrom("acme/shop", branch))
+	})
+	return bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{Remote: "upstream", Dir: clone}), clone
+}
+
+// pushCommitOnto pushes a new empty commit with parent onto upstream's
+// branch, without touching the clone's branches, and returns its hash.
+func pushCommitOnto(t *testing.T, clone, parent, branch string) string {
+	t.Helper()
+	sha := git(t, clone, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit-tree", "HEAD^{tree}", "-p", parent, "-m", "remote work")
+	git(t, clone, "push", "upstream", sha+":refs/heads/"+branch)
+	return sha
+}
+
+func TestCheckoutSwitchesToTheSourceBranch(t *testing.T) {
+	// given
+	// ... a clone whose remote "upstream" has branch feat/basket, and a server with pull request 7 from it
+	c, clone := cloneWithBranch(t, "feat/basket")
+
+	// when
+	// ... pull request 7 is checked out
+	err := c.Checkout(context.Background(), 7)
+
+	// then
+	// ... the clone is on feat/basket, tracking upstream
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, clone, "rev-parse", "--abbrev-ref", "HEAD"); got != "feat/basket" {
+		t.Errorf("want branch feat/basket, got %q", got)
+	}
+	if got := git(t, clone, "rev-parse", "--abbrev-ref", "@{upstream}"); got != "upstream/feat/basket" {
+		t.Errorf("want upstream upstream/feat/basket, got %q", got)
+	}
+}
+
+func TestCheckoutAgainFastForwardsTheLocalBranch(t *testing.T) {
+	// given
+	// ... pull request 7 checked out once, then a new commit on upstream's feat/basket, and the clone back on main
+	c, clone := cloneWithBranch(t, "feat/basket")
+	if err := c.Checkout(context.Background(), 7); err != nil {
+		t.Fatal(err)
+	}
+	next := pushCommitOnto(t, clone, "feat/basket", "feat/basket")
+	git(t, clone, "switch", "main")
+
+	// when
+	// ... pull request 7 is checked out again
+	err := c.Checkout(context.Background(), 7)
+
+	// then
+	// ... the clone is on feat/basket at the new commit
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, clone, "rev-parse", "--abbrev-ref", "HEAD"); got != "feat/basket" {
+		t.Errorf("want branch feat/basket, got %q", got)
+	}
+	if got := git(t, clone, "rev-parse", "HEAD"); got != next {
+		t.Errorf("want HEAD at %s, got %s", next, got)
+	}
+}
+
+func TestCheckoutOfADivergedLocalBranchFailsWithoutMovingHead(t *testing.T) {
+	// given
+	// ... a local feat/basket with a commit upstream lacks, upstream's with one the clone lacks, and the clone on main
+	c, clone := cloneWithBranch(t, "feat/basket")
+	if err := c.Checkout(context.Background(), 7); err != nil {
+		t.Fatal(err)
+	}
+	git(t, clone, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "local work")
+	pushCommitOnto(t, clone, "main", "feat/basket")
+	git(t, clone, "switch", "main")
+
+	// when
+	// ... pull request 7 is checked out again
+	err := c.Checkout(context.Background(), 7)
+
+	// then
+	// ... it fails and the clone is still on main
+	if err == nil {
+		t.Fatal("want an error for a diverged branch")
+	}
+	if got := git(t, clone, "rev-parse", "--abbrev-ref", "HEAD"); got != "main" {
+		t.Errorf("want HEAD still on main, got %q", got)
+	}
+}
+
+func TestCheckoutRefusesABranchNameGitWouldReadAsAPattern(t *testing.T) {
+	// given
+	// ... upstream with branch featx the clone has no tracking ref for, and pull request 7 from a branch named feat*
+	_, clone := cloneWithBranch(t, "featx")
+	git(t, clone, "update-ref", "-d", "refs/remotes/upstream/featx")
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, pullRequestFrom("acme/shop", "feat*"))
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{Remote: "upstream", Dir: clone})
+	before := git(t, clone, "for-each-ref", "refs/remotes")
+
+	// when
+	// ... pull request 7 is checked out
+	err := c.Checkout(context.Background(), 7)
+
+	// then
+	// ... it fails naming the branch, and no remote-tracking ref changed
+	if err == nil || !strings.Contains(err.Error(), `"feat*"`) {
+		t.Fatalf("got %v", err)
+	}
+	if got := git(t, clone, "for-each-ref", "refs/remotes"); got != before {
+		t.Errorf("want remote-tracking refs unchanged, got %q", got)
+	}
+}
+
+func TestCheckoutOfAPullRequestFromAForkFailsNamingForks(t *testing.T) {
+	// given
+	// ... a server with pull request 7 from a fork, and a directory that is not a clone
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, pullRequestFrom("someone/shop", "feat/basket"))
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{Remote: "origin", Dir: t.TempDir()})
+
+	// when
+	// ... pull request 7 is checked out
+	err := c.Checkout(context.Background(), 7)
+
+	// then
+	// ... it fails naming forks
+	if err == nil || !strings.Contains(err.Error(), "fork") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestOpenInBrowserOpensThePullRequestOnBitbucket(t *testing.T) {
+	// given
+	// ... an opener that records the URL
+	var opened []string
+	open := func(u string) error { opened = append(opened, u); return nil }
+	c := bitbucket.NewClient("http://127.0.0.1:0", "e", "t", repo, bitbucket.Options{Open: open})
+
+	// when
+	// ... pull request 7 is opened in the browser
+	err := c.OpenInBrowser(context.Background(), 7)
+
+	// then
+	// ... the pull request's page on bitbucket.org is opened
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://bitbucket.org/acme/shop/pull-requests/7"}
+	if !slices.Equal(opened, want) {
+		t.Errorf("want %v, got %v", want, opened)
 	}
 }

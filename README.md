@@ -1,12 +1,14 @@
 # review-assist
 
-A terminal UI for reviewing GitHub pull requests, with optional AI review
-agents. Agents run on a Messages API endpoint (Ollama, Anthropic, a proxy) or
-on Claude Code. The agents only suggest. They cannot post.
+A terminal UI for reviewing GitHub and Bitbucket Cloud pull requests, with
+optional AI review agents. Agents run on a Messages API endpoint (Ollama,
+Anthropic, a proxy) or on Claude Code. The agents only suggest. They cannot
+post.
 
 Built with bubbletea, lipgloss and glamour (the renderer glow uses). It talks
 to GitHub through `gh`, so github.com and GitHub Enterprise both work with
-your existing `gh auth login`.
+your existing `gh auth login`. It talks to bitbucket.org over its REST API
+with an API token (see [Bitbucket](#bitbucket)).
 
 ## Run
 
@@ -16,6 +18,7 @@ go install ./cmd/review-assist    # or: go build -o review-assist ./cmd/review-a
 review-assist                     # PRs of the repo in the current directory
 review-assist 41                  # open PR 41 of that repo
 review-assist https://ghe.example.com/acme/widgets/pull/41
+review-assist https://bitbucket.org/acme/scheduler/pull-requests/7
 review-assist OWNER/REPO#12       # github.com
 review-assist HOST/OWNER/REPO#12  # any host
 review-assist --init              # write a first config file that uses Claude Code
@@ -29,7 +32,7 @@ existing file.
 
 `--init` also writes `config.example.json` next to the config file. It sets
 every option, so use it as a reference. `--init` rewrites it on every run, so
-it always matches the installed version. Its token is empty.
+it always matches the installed version. Its secrets are empty.
 
 ### Which remote
 
@@ -44,6 +47,12 @@ Other remotes are ignored. Say a clone has two remotes on bitbucket.org,
 `acme` and `mirror`, and none called `origin`. If its `develop` branch tracks
 `acme/develop`, review-assist uses `acme`. On a branch that tracks
 nothing, neither step 2 nor step 3 applies, so it refuses to start.
+
+The header shows the remote it picked next to the repository, such as
+`bitbucket.org/acme/scheduler  remote acme`. On Bitbucket, checkout fetches
+from that remote. For a PR URL of a repository the current directory is not a
+clone of, there is no remote, so the header shows none and checkout is not
+offered.
 
 When no remote points at a supported code host, it lists the remotes it
 ignored. An SSH host alias such as `github-work` is not resolved, so it shows
@@ -82,6 +91,8 @@ file.
 | `claude_code.model` | | | claude's default |
 | `claude_code.effort` | | | claude's default |
 | `claude_code.executable` | | | `claude` on `PATH` |
+| `bitbucket.email` | `REVIEW_ASSIST_BITBUCKET_EMAIL` | | required for Bitbucket; your Atlassian account email |
+| `bitbucket.api_token` | `REVIEW_ASSIST_BITBUCKET_API_TOKEN` | | required for Bitbucket; an API token |
 | `review.concurrency` | | `-concurrency` | 4 agents at once |
 | `review.max_turns` | | `-max-turns` | 40 model turns per agent |
 
@@ -114,11 +125,42 @@ key is an error, so a typo fails loudly instead of being ignored.
     "model": "deepseek-v4.1-flash:cloud",
     "effort": "none"
   },
+  "bitbucket": {
+    "email": "you@example.com",
+    "api_token": "ATATT…"
+  },
   "review": { "concurrency": 4, "max_turns": 40 }
 }
 ```
 
 Keys and tokens in the file are secrets: keep it private (`chmod 600`).
+
+### Bitbucket
+
+review-assist signs in to Bitbucket Cloud with two settings, and refuses to
+start on a bitbucket.org repository until both are set. A GitHub repository
+needs neither.
+
+- `bitbucket.email` is your Atlassian account email, not your Bitbucket
+  username.
+- `bitbucket.api_token` is an API token you mint. A password is never
+  accepted.
+
+To mint the token: Atlassian account settings → Security → Create and manage
+API tokens (<https://id.atlassian.com/manage-profile/security/api-tokens>) →
+Create API token with scopes. Give it a name and an expiry, pick
+the app Bitbucket, then these scopes:
+
+| scope | used for |
+|---|---|
+| `read:user:bitbucket` | who you are, to tell your own pull requests apart |
+| `read:pullrequest:bitbucket` | list pull requests, read one, its comments; post and delete comments |
+| `write:pullrequest:bitbucket` | approve, request changes, merge, decline, mark as draft or ready |
+| `read:repository:bitbucket` | the diff: Bitbucket redirects a pull request's diff to the repository's |
+
+The token is shown once, so copy it into the config file or
+`REVIEW_ASSIST_BITBUCKET_API_TOKEN` straight away. Checkout and agent review
+fetch with git, over the remote's own credentials, not this token.
 
 ### Backends
 
@@ -187,14 +229,15 @@ Agents get these tools and nothing else: `list_changed_files`, `get_diff`,
 `read_file`, `list_dir`, `grep`, `git_log`, `pr_description`, and
 `submit_findings`. Each runs a fixed read-only git command (`cat-file`,
 `ls-tree`, `grep`, `log`) against the PR's head or base commit. There is no
-shell, no write tool, and no GitHub access. Paths are checked so they cannot
+shell, no write tool, and no code host access. Paths are checked so they cannot
 become git options.
 
 To read the code, agents need the PR commits locally:
 
-- If the current directory is a clone of the PR's repo, the app runs
-  `git fetch <remote> refs/pull/N/head` there. That adds objects only. It does
-  not touch branches, the index or your working tree.
+- If the current directory is a clone of the PR's repo, the app fetches the
+  PR's commits there. On GitHub it runs `git fetch <remote> refs/pull/N/head`.
+  On Bitbucket it fetches the base and source branches by name. That adds
+  objects only. It does not touch branches, the index or your working tree.
 - Otherwise it keeps a bare mirror under `~/Library/Caches/review-assist/`
   (`os.UserCacheDir`). The first review of a repo clones it, which takes a while
   for a big repo.
@@ -219,6 +262,7 @@ internal/core/                 domain core (imports no adapter)
 internal/adapters/
   tui/             inbound: bubbletea screens calling pr.Service and review.Service
   github/          outbound pr.CodeHost over the gh CLI (github.com and GHE)
+  bitbucket/       outbound pr.CodeHost over the Bitbucket Cloud REST API
   messagesapi/     outbound review.Backend: loops over the Anthropic Messages API
   claudecode/      outbound review.Backend: the claude CLI in bare mode, via pi-claude
   gitrepo/         outbound review.CodeSource/Code over git (read commands only)

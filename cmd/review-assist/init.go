@@ -99,7 +99,7 @@ func writeInitConfig(path, token string) error {
 }
 
 // writeExampleConfig always overwrites: the example is documentation and must
-// match this version. The token is left empty on purpose.
+// match this version. The secrets are left empty on purpose.
 func writeExampleConfig(path string) error {
 	var fc fileConfig
 	fc.Backend = ptr(backendClaudeCode)
@@ -112,6 +112,8 @@ func writeExampleConfig(path string) error {
 	fc.ClaudeCode.Model = ptr("sonnet")
 	fc.ClaudeCode.Effort = ptr(review.EffortMedium)
 	fc.ClaudeCode.Executable = ptr("claude")
+	fc.Bitbucket.Email = ptr("")
+	fc.Bitbucket.APIToken = ptr("")
 	fc.Review.Concurrency = ptr(4)
 	fc.Review.MaxTurns = ptr(40)
 	data, err := json.MarshalIndent(fc, "", "  ")

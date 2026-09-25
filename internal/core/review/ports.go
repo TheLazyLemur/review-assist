@@ -37,9 +37,9 @@ type Tool struct {
 }
 
 type CodeSource interface {
-	// Open fetches the commits where it can. A missing commit is not an
-	// error; Code.HasCommit reports it.
-	Open(ctx context.Context, repo pr.Repo, number int, headSHA, baseSHA string) (Code, error)
+	// Open fetches the pull request's head and base commits where it can. A
+	// missing commit is not an error; Code.HasCommit reports it.
+	Open(ctx context.Context, repo pr.Repo, p *pr.PR) (Code, error)
 }
 
 // Code is read-only by design: agents reach it only through tools.go.

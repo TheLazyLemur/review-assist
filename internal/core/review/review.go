@@ -59,7 +59,7 @@ func NewService(backend Backend, code CodeSource, maxTurns, concurrency int) *Se
 func (r *Service) Review(ctx context.Context, repo pr.Repo, d *pr.Details, level Level, emit func(Event)) (Result, error) {
 	const setup = "Setup"
 	emit(Event{Agent: setup, Kind: EventStarted, Detail: "fetching PR commits"})
-	code, err := r.code.Open(ctx, repo, d.PR.Number, d.PR.HeadSHA, d.PR.BaseSHA)
+	code, err := r.code.Open(ctx, repo, d.PR)
 	if err != nil {
 		emit(Event{Agent: setup, Kind: EventFailed, Detail: err.Error()})
 		return Result{Level: level}, err

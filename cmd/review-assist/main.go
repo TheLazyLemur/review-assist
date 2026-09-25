@@ -1,5 +1,6 @@
-// review-assist is a terminal UI for reviewing GitHub pull requests with
-// optional read-only AI review agents on a Messages API endpoint or Claude Code.
+// review-assist is a terminal UI for reviewing pull requests on a code host,
+// with optional read-only AI review agents on a Messages API endpoint or
+// Claude Code.
 package main
 
 import (

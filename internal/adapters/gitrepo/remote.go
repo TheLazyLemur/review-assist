@@ -19,20 +19,20 @@ type Remote struct{ Name, URL string }
 type PlatformOf func(hostname string) (pr.Platform, bool, error)
 
 // FindRemote picks the repository of the clone at dir from its git remotes,
-// by PickRemote.
-func FindRemote(ctx context.Context, dir string, platformOf PlatformOf) (pr.Repo, error) {
+// by PickRemote, and returns it with the name of the remote it came from.
+func FindRemote(ctx context.Context, dir string, platformOf PlatformOf) (pr.Repo, string, error) {
 	r := &Repo{dir: dir}
 	_, err := r.git(ctx, "rev-parse", "--git-dir")
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 128 {
-		return pr.Repo{}, fmt.Errorf("%s is not in a git repository", dir)
+		return pr.Repo{}, "", fmt.Errorf("%s is not in a git repository", dir)
 	}
 	if err != nil {
-		return pr.Repo{}, fmt.Errorf("git rev-parse: %w", err)
+		return pr.Repo{}, "", fmt.Errorf("git rev-parse: %w", err)
 	}
 	out, err := r.git(ctx, "remote", "-v")
 	if err != nil {
-		return pr.Repo{}, fmt.Errorf("git remote: %w", err)
+		return pr.Repo{}, "", fmt.Errorf("git remote: %w", err)
 	}
 	var remotes []Remote
 	for _, line := range strings.Split(string(out), "\n") {
@@ -43,7 +43,7 @@ func FindRemote(ctx context.Context, dir string, platformOf PlatformOf) (pr.Repo
 	}
 	tracked, err := r.trackedRemote(ctx)
 	if err != nil {
-		return pr.Repo{}, err
+		return pr.Repo{}, "", err
 	}
 	return PickRemote(remotes, tracked, platformOf)
 }
@@ -70,20 +70,24 @@ func (r *Repo) trackedRemote(ctx context.Context) (string, error) {
 }
 
 // PickRemote applies the rule for the remote in CONTEXT.md: the first of the
-// tracked remote, origin, and the only remote on a supported code host.
-// remotes are in `git remote` order, which the refusal keeps. tracked is ""
-// when the current branch tracks nothing. A hostname is looked up only when the
-// rule reaches its remote, so a broken lookup for a remote the rule never needs
-// does not stop it.
-func PickRemote(remotes []Remote, tracked string, platformOf PlatformOf) (pr.Repo, error) {
+// tracked remote, origin, and the only remote on a supported code host. It
+// returns the repository and the name of the remote picked. remotes are in
+// `git remote` order, which the refusal keeps. tracked is "" when the current
+// branch tracks nothing. A hostname is looked up only when the rule reaches
+// its remote, so a broken lookup for a remote the rule never needs does not
+// stop it.
+func PickRemote(remotes []Remote, tracked string, platformOf PlatformOf) (pr.Repo, string, error) {
 	for _, want := range []string{tracked, "origin"} {
 		for _, r := range remotes {
 			if r.Name != want {
 				continue
 			}
 			repo, ok, err := lookUp(r, platformOf)
-			if err != nil || ok {
-				return repo, err
+			if err != nil {
+				return pr.Repo{}, "", err
+			}
+			if ok {
+				return repo, r.Name, nil
 			}
 		}
 	}
@@ -92,7 +96,7 @@ func PickRemote(remotes []Remote, tracked string, platformOf PlatformOf) (pr.Rep
 	for _, r := range remotes {
 		repo, ok, err := lookUp(r, platformOf)
 		if err != nil {
-			return pr.Repo{}, err
+			return pr.Repo{}, "", err
 		}
 		if ok {
 			candidates = append(candidates, repo)
@@ -103,11 +107,11 @@ func PickRemote(remotes []Remote, tracked string, platformOf PlatformOf) (pr.Rep
 	}
 	switch len(candidates) {
 	case 0:
-		return pr.Repo{}, refusal("no git remote points at a supported code host (GitHub, Bitbucket)", ignored)
+		return pr.Repo{}, "", refusal("no git remote points at a supported code host (GitHub, Bitbucket)", ignored)
 	case 1:
-		return candidates[0], nil
+		return candidates[0], onHosts[0].remote, nil
 	}
-	return pr.Repo{}, refusal("several git remotes point at code hosts; check out a branch that tracks one", onHosts)
+	return pr.Repo{}, "", refusal("several git remotes point at code hosts; check out a branch that tracks one", onHosts)
 }
 
 type listed struct{ remote, where string }

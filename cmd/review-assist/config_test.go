@@ -13,21 +13,23 @@ import (
 
 func TestSettingsApplyFileThenEnvThenFlags(t *testing.T) {
 	// given
-	// ... a config file choosing Claude Code, with a token and effort, plus Messages API settings and concurrency
+	// ... a config file choosing Claude Code, with a token and effort, plus Messages API settings, Bitbucket credentials and concurrency
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	file := `{"backend": "claude-code",
 		"claude_code": {"token": "file-token", "model": "file-model", "effort": "low"},
 		"messages_api": {"base_url": "http://file:1", "api_key": "file-key", "effort": "medium"},
+		"bitbucket": {"email": "file@example.com", "api_token": "file-bb-token"},
 		"review": {"concurrency": 2}}`
 	if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// ... env overriding the model and base URL, plus a generic key that must not beat the file
+	// ... env overriding the model, base URL and Bitbucket API token, plus a generic key that must not beat the file
 	env := map[string]string{
-		"REVIEW_ASSIST_MODEL":    "env-model",
-		"REVIEW_ASSIST_BASE_URL": "http://env:2",
-		"ANTHROPIC_API_KEY":      "generic-key",
+		"REVIEW_ASSIST_MODEL":               "env-model",
+		"REVIEW_ASSIST_BASE_URL":            "http://env:2",
+		"REVIEW_ASSIST_BITBUCKET_API_TOKEN": "env-bb-token",
+		"ANTHROPIC_API_KEY":                 "generic-key",
 	}
 
 	// when
@@ -46,6 +48,8 @@ func TestSettingsApplyFileThenEnvThenFlags(t *testing.T) {
 	assertEqual(t, "http://env:2", cfg.messages.BaseURL)
 	assertEqual(t, "file-key", cfg.messages.APIKey)
 	assertEqual(t, review.EffortMedium, cfg.messages.Effort)
+	assertEqual(t, "file@example.com", cfg.bitbucket.email)
+	assertEqual(t, "env-bb-token", cfg.bitbucket.apiToken)
 	assertEqual(t, 2, cfg.concurrency)
 	assertEqual(t, 40, cfg.maxTurns)
 }

@@ -29,6 +29,10 @@ type fileConfig struct {
 		Effort     *review.Effort `json:"effort"`
 		Executable *string        `json:"executable"`
 	} `json:"claude_code"`
+	Bitbucket struct {
+		Email    *string `json:"email"`
+		APIToken *string `json:"api_token"`
+	} `json:"bitbucket"`
 	Review struct {
 		Concurrency *int `json:"concurrency"`
 		MaxTurns    *int `json:"max_turns"`
@@ -74,6 +78,8 @@ func loadConfigFile(path string, cfg *config) error {
 	setIf(&cfg.claude.Model, fc.ClaudeCode.Model)
 	setIf(&cfg.claude.Effort, fc.ClaudeCode.Effort)
 	setIf(&cfg.claude.Executable, fc.ClaudeCode.Executable)
+	setIf(&cfg.bitbucket.email, fc.Bitbucket.Email)
+	setIf(&cfg.bitbucket.apiToken, fc.Bitbucket.APIToken)
 	setIf(&cfg.concurrency, fc.Review.Concurrency)
 	setIf(&cfg.maxTurns, fc.Review.MaxTurns)
 	return nil

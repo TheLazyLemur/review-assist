@@ -1,15 +1,18 @@
-// Package bitbucket reads and reviews pull requests on Bitbucket Cloud over
-// its REST API.
+// Package bitbucket implements pr.CodeHost for Bitbucket Cloud, over its REST
+// API and, for checkout, git.
 package bitbucket
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -26,13 +29,43 @@ type Client struct {
 	email   string
 	token   string
 	repo    pr.Repo
+	opts    Options
 }
+
+var _ pr.CodeHost = (*Client)(nil)
+
+// Options are what the actions outside the API need. Checkout and
+// OpenInBrowser fail naming an option that is unset.
+type Options struct {
+	// Remote is the git remote review-assist picked; Checkout fetches from it.
+	Remote string
+	// Dir is the working directory Checkout runs git in.
+	Dir string
+	// Open opens a URL in the browser.
+	Open func(url string) error
+	// PollInterval is the wait between polls of a merge task; zero means a
+	// second.
+	PollInterval time.Duration
+	// MergeWait caps how long Merge waits for a merge task; zero means
+	// defaultMergeWait.
+	MergeWait time.Duration
+}
+
+// defaultMergeWait bounds the poll on its own: the TUI acts with a context
+// that never ends, and a task stuck at PENDING would keep it busy for good.
+const defaultMergeWait = 5 * time.Minute
 
 // NewClient takes the API root, https://api.bitbucket.org/2.0 in production,
 // and an Atlassian account email with an API token.
-func NewClient(baseURL, email, token string, repo pr.Repo) *Client {
+func NewClient(baseURL, email, token string, repo pr.Repo, opts Options) *Client {
 	hc := &http.Client{Timeout: 60 * time.Second, CheckRedirect: checkRedirect}
-	return &Client{http: hc, baseURL: strings.TrimSuffix(baseURL, "/"), email: email, token: token, repo: repo}
+	if opts.PollInterval == 0 {
+		opts.PollInterval = time.Second
+	}
+	if opts.MergeWait == 0 {
+		opts.MergeWait = defaultMergeWait
+	}
+	return &Client{http: hc, baseURL: strings.TrimSuffix(baseURL, "/"), email: email, token: token, repo: repo, opts: opts}
 }
 
 // maxRedirects is net/http's own cap, which a CheckRedirect replaces.
@@ -63,6 +96,9 @@ type branchRefDTO struct {
 	Commit struct {
 		Hash string `json:"hash"`
 	} `json:"commit"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
 }
 
 type summaryDTO struct {
@@ -216,6 +252,18 @@ func newInline(a pr.Anchor) (*newInlineDTO, error) {
 		return nil, fmt.Errorf("comment anchor has no valid side: %+v", a)
 	}
 	return in, nil
+}
+
+type mergeDTO struct {
+	MergeStrategy string `json:"merge_strategy"`
+}
+
+type taskStatusDTO struct {
+	TaskStatus string `json:"task_status"`
+}
+
+type draftDTO struct {
+	Draft bool `json:"draft"`
 }
 
 type page[T any] struct {
@@ -379,6 +427,159 @@ func (c *Client) postComment(ctx context.Context, number int, d newCommentDTO) e
 	return err
 }
 
+var mergeStrategies = map[pr.MergeMethod]string{
+	pr.MergeCommit: "merge_commit",
+	pr.Squash:      "squash",
+	pr.Rebase:      "rebase_fast_forward",
+}
+
+// Merge waits for a merge Bitbucket queues as a task, so a nil error means
+// the pull request is merged.
+func (c *Client) Merge(ctx context.Context, number int, m pr.MergeMethod) error {
+	strategy, ok := mergeStrategies[m]
+	if !ok {
+		return fmt.Errorf("unknown merge method %q", m)
+	}
+	resp, _, err := c.send(ctx, http.MethodPost, c.baseURL+c.pullRequestPath(number, "/merge"), mergeDTO{MergeStrategy: strategy})
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusAccepted {
+		return nil
+	}
+	task, err := resp.Location()
+	if err != nil {
+		return fmt.Errorf("merge of pull request %d was queued with no task to poll: %w", number, err)
+	}
+	return c.awaitMerge(ctx, task.String())
+}
+
+// awaitMerge polls a merge task. A failed merge answers the poll with an
+// error status, which get returns with Bitbucket's reason.
+func (c *Client) awaitMerge(ctx context.Context, taskURL string) error {
+	// taskURL comes from a response header; the credentials must not follow
+	// it to another host.
+	if !strings.HasPrefix(taskURL, c.baseURL+"/") {
+		return fmt.Errorf("merge task %q is outside %s", taskURL, c.baseURL)
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.opts.MergeWait)
+	defer cancel()
+	for {
+		var s taskStatusDTO
+		if err := c.get(ctx, taskURL, &s); err != nil {
+			// The cap can expire mid-request, where net/http reports only the
+			// deadline.
+			if ctx.Err() != nil {
+				return fmt.Errorf("merge still pending: %w (%s)", ctx.Err(), taskURL)
+			}
+			return err
+		}
+		switch s.TaskStatus {
+		case "SUCCESS":
+			return nil
+		case "PENDING":
+		default:
+			return fmt.Errorf("unknown merge task status %q (%s)", s.TaskStatus, taskURL)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("merge still pending: %w (%s)", ctx.Err(), taskURL)
+		case <-time.After(c.opts.PollInterval):
+		}
+	}
+}
+
+func (c *Client) Close(ctx context.Context, number int) error {
+	_, err := c.do(ctx, http.MethodPost, c.baseURL+c.pullRequestPath(number, "/decline"), nil)
+	return err
+}
+
+func (c *Client) Reopen(context.Context, int) error {
+	return errors.New("reopening a declined pull request is not supported on Bitbucket")
+}
+
+func (c *Client) MarkReady(ctx context.Context, number int) error {
+	return c.setDraft(ctx, number, false)
+}
+
+func (c *Client) ConvertToDraft(ctx context.Context, number int) error {
+	return c.setDraft(ctx, number, true)
+}
+
+func (c *Client) setDraft(ctx context.Context, number int, draft bool) error {
+	_, err := c.do(ctx, http.MethodPut, c.baseURL+c.pullRequestPath(number, ""), draftDTO{Draft: draft})
+	return err
+}
+
+// ---- local ----
+
+// Checkout never resets a local branch: one that exists is switched to and
+// fast-forwarded, so commits only on it make the checkout fail instead of
+// being lost.
+func (c *Client) Checkout(ctx context.Context, number int) error {
+	if c.opts.Remote == "" || c.opts.Dir == "" {
+		return fmt.Errorf("checkout needs a remote and a working directory, got %q and %q", c.opts.Remote, c.opts.Dir)
+	}
+	var d summaryDTO
+	if err := c.get(ctx, c.baseURL+c.pullRequestPath(number, ""), &d); err != nil {
+		return err
+	}
+	src, dst := d.Source.Repository.FullName, d.Destination.Repository.FullName
+	if src == "" || dst == "" {
+		return fmt.Errorf("pull request %d has no source or destination repository", number)
+	}
+	if src != dst {
+		return fmt.Errorf("checking out a pull request from a fork (%s) is not supported on Bitbucket", src)
+	}
+	branch := d.Source.Branch.Name
+	// A leading dash would reach git as an option, and a name git rejects as
+	// a ref, such as feat*, would reach fetch as a pattern. The plain form,
+	// not --branch, which accepts @{-1}.
+	if branch == "" || strings.HasPrefix(branch, "-") || c.git(ctx, "check-ref-format", "refs/heads/"+branch) != nil {
+		return fmt.Errorf("pull request %d: source branch %q cannot be checked out", number, branch)
+	}
+	local, tracking := "refs/heads/"+branch, "refs/remotes/"+c.opts.Remote+"/"+branch
+	if err := c.git(ctx, "fetch", c.opts.Remote, "+"+local+":"+tracking); err != nil {
+		return err
+	}
+	// Any failure reads as "no such branch": switch -c then fails loudly if
+	// the branch does exist.
+	if c.git(ctx, "rev-parse", "--verify", "--quiet", local) != nil {
+		return c.git(ctx, "switch", "-c", branch, "--track", tracking)
+	}
+	// Checked before switching, so a diverged branch leaves HEAD where it was.
+	if c.git(ctx, "merge-base", "--is-ancestor", local, tracking) != nil {
+		return fmt.Errorf("local branch %s has commits %s/%s lacks; not checking out", branch, c.opts.Remote, branch)
+	}
+	if err := c.git(ctx, "switch", branch); err != nil {
+		return err
+	}
+	return c.git(ctx, "merge", "--ff-only", tracking)
+}
+
+func (c *Client) OpenInBrowser(_ context.Context, number int) error {
+	if c.opts.Open == nil {
+		return errors.New("no way to open a browser was given to the Bitbucket client")
+	}
+	return c.opts.Open(c.repo.URL() + "/pull-requests/" + strconv.Itoa(number))
+}
+
+func (c *Client) git(ctx context.Context, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", c.opts.Dir}, args...)...)
+	// A credential prompt would hang behind the TUI or draw over it.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("%s (git %s)", msg, args[0])
+	}
+	return nil
+}
+
 // ---- HTTP ----
 
 func (c *Client) pullRequestPath(number int, rest string) string {
@@ -430,17 +631,24 @@ func (c *Client) get(ctx context.Context, rawURL string, v any) error {
 }
 
 func (c *Client) do(ctx context.Context, method, rawURL string, payload any) ([]byte, error) {
+	_, body, err := c.send(ctx, method, rawURL, payload)
+	return body, err
+}
+
+// send is do for a caller that needs the response's status or headers. The
+// response body is already read and closed.
+func (c *Client) send(ctx context.Context, method, rawURL string, payload any) (*http.Response, []byte, error) {
 	var reqBody io.Reader
 	if payload != nil {
 		b, err := json.Marshal(payload)
 		if err != nil {
-			return nil, fmt.Errorf("encode %s %s: %w", method, rawURL, err)
+			return nil, nil, fmt.Errorf("encode %s %s: %w", method, rawURL, err)
 		}
 		reqBody = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, reqBody)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -448,12 +656,12 @@ func (c *Client) do(ctx context.Context, method, rawURL string, payload any) ([]
 	req.SetBasicAuth(c.email, c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", rawURL, err)
+		return nil, nil, fmt.Errorf("read %s: %w", rawURL, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg := http.StatusText(resp.StatusCode)
@@ -463,7 +671,7 @@ func (c *Client) do(ctx context.Context, method, rawURL string, payload any) ([]
 		}
 		// The reason first: callers show this on one line cut to the terminal
 		// width, and the URL can be long.
-		return nil, fmt.Errorf("%s (%d %s %s)", msg, resp.StatusCode, method, rawURL)
+		return nil, nil, fmt.Errorf("%s (%d %s %s)", msg, resp.StatusCode, method, rawURL)
 	}
-	return body, nil
+	return resp, body, nil
 }

@@ -22,9 +22,11 @@ type Deps struct {
 	Reviews   *review.Service
 	ModelName string // shown to the user; the model itself is behind Reviews
 	Cwd       string
-	LocalRepo bool // the cwd is a checkout of the PR repo (enables `gh pr checkout`)
-	OpenPR    int  // open this PR directly; 0 starts on the list
-	Dark      bool
+	// Remote is the git remote the repository was taken from; "" when the
+	// cwd is not a clone of it, which also hides checkout.
+	Remote string
+	OpenPR int // open this PR directly; 0 starts on the list
+	Dark   bool
 }
 
 type screen int
@@ -130,7 +132,7 @@ func (m *Model) loadPR(number int) tea.Cmd {
 	}
 }
 
-// act runs a GitHub action in the background and reports it in the status line.
+// act runs a code host action in the background and reports it in the status line.
 func (m *Model) act(what string, refresh bool, fn func(ctx context.Context) error) tea.Cmd {
 	m.busy++
 	m.setStatus(what+"…", false)
@@ -316,6 +318,9 @@ func (m *Model) View() tea.View {
 
 func (m *Model) headerView() string {
 	repo := titleStyle.Render(" review-assist ") + subtleStyle.Render(m.deps.PRs.Repo().Qualified())
+	if m.deps.Remote != "" {
+		repo += faintStyle.Render("  remote " + m.deps.Remote)
+	}
 	if m.viewer != "" {
 		repo += faintStyle.Render("  as @" + m.viewer)
 	}

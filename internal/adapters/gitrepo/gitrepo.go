@@ -27,23 +27,51 @@ type Source struct {
 
 var _ review.CodeSource = Source{}
 
-func (s Source) Open(ctx context.Context, repo pr.Repo, number int, headSHA, baseSHA string) (review.Code, error) {
-	if headSHA == "" || baseSHA == "" {
+func (s Source) Open(ctx context.Context, repo pr.Repo, p *pr.PR) (review.Code, error) {
+	if p.HeadSHA == "" || p.BaseSHA == "" {
 		return nil, fmt.Errorf("gitrepo: need head and base SHAs")
+	}
+	switch repo.Platform {
+	case pr.GitHub:
+	case pr.Bitbucket:
+		// The names go into a fetch, so one that git would read as a
+		// refspec or an option must stop here. Not --branch: inside a
+		// repository it expands @{-1}.
+		for _, b := range []struct{ side, name string }{{"base", p.BaseRef}, {"head", p.HeadRef}} {
+			if b.name == "" || strings.HasPrefix(b.name, "-") || exec.CommandContext(ctx, "git", "check-ref-format", "refs/heads/"+b.name).Run() != nil {
+				return nil, fmt.Errorf("gitrepo: bad %s branch %q: want a branch name", b.side, b.name)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("gitrepo: no fetch for platform %q", repo.Platform)
 	}
 	r, err := s.resolve(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
-	if !r.HasCommit(ctx, headSHA) || !r.HasCommit(ctx, baseSHA) {
-		remote := r.remoteFor(ctx, repo)
-		// Errors are tolerated: the review reports missing commits and the
-		// agents still work from the diff.
-		_, _ = r.git(ctx, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", remote, fmt.Sprintf("refs/pull/%d/head", number))
-		if !r.HasCommit(ctx, baseSHA) {
-			_, _ = r.git(ctx, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", remote, baseSHA)
-		}
+	if r.HasCommit(ctx, p.HeadSHA) && r.HasCommit(ctx, p.BaseSHA) {
+		return r, nil
 	}
+	remote := r.remoteFor(ctx, repo)
+	fetch := func(ref string) {
+		// Errors are tolerated: the review reports missing commits and the
+		// agents still work from the diff. An empty --refmap keeps the
+		// remote's refspec from moving its remote-tracking branches.
+		_, _ = r.git(ctx, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, ref)
+	}
+	if repo.Platform == pr.GitHub {
+		fetch(fmt.Sprintf("refs/pull/%d/head", p.Number))
+		if !r.HasCommit(ctx, p.BaseSHA) {
+			fetch(p.BaseSHA)
+		}
+		return r, nil
+	}
+	// Bitbucket serves no pull request ref, and its 12-character hashes are
+	// too short to fetch by. Base and head go in separate fetches because one
+	// missing ref fails the whole fetch, and a fork's source branch lives in
+	// another repository.
+	fetch("refs/heads/" + p.BaseRef)
+	fetch("refs/heads/" + p.HeadRef)
 	return r, nil
 }
 
@@ -70,6 +98,7 @@ func (s Source) resolve(ctx context.Context, repo pr.Repo) (*Repo, error) {
 	tmp := dir + ".partial"
 	_ = os.RemoveAll(tmp)
 	clone := exec.CommandContext(ctx, "git", "clone", "--quiet", "--bare", cloneURL(repo), tmp)
+	clone.Env = noPrompt()
 	if out, err := clone.CombinedOutput(); err != nil {
 		_ = os.RemoveAll(tmp)
 		return nil, fmt.Errorf("mirror %s: %s", repo.Qualified(), strings.TrimSpace(string(out)))
@@ -166,14 +195,19 @@ func (r *Repo) remoteFor(ctx context.Context, repo pr.Repo) string {
 		if len(f) < 2 {
 			continue
 		}
-		u := strings.TrimSuffix(strings.TrimSuffix(f[1], "/"), ".git")
-		slug := repo.FullName()
-		if strings.Contains(u, repo.Hostname) && (strings.HasSuffix(u, "/"+slug) || strings.HasSuffix(u, ":"+slug)) {
+		// Code hosts ignore case in owner and name, as sameRepo does.
+		u := strings.ToLower(strings.TrimSuffix(strings.TrimSuffix(f[1], "/"), ".git"))
+		slug := strings.ToLower(repo.FullName())
+		if strings.Contains(u, strings.ToLower(repo.Hostname)) && (strings.HasSuffix(u, "/"+slug) || strings.HasSuffix(u, ":"+slug)) {
 			return f[0]
 		}
 	}
 	return cloneURL(repo)
 }
+
+// noPrompt stops git asking for credentials: a prompt would hang behind the
+// TUI or draw over it.
+func noPrompt() []string { return append(os.Environ(), "GIT_TERMINAL_PROMPT=0") }
 
 type gitError struct {
 	stderr string
@@ -185,6 +219,7 @@ func (e *gitError) Unwrap() error { return e.err }
 
 func (r *Repo) git(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", r.dir}, args...)...)
+	cmd.Env = noPrompt()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
