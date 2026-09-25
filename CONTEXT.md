@@ -25,6 +25,13 @@ _Avoid_: Host, domain
 A repository on a code host, named by its hostname, owner and name.
 _Avoid_: Project, repo slug
 
+**Remote**:
+The one git remote of a clone that review-assist takes the repository from.
+It is the first of these that points at a code host: the remote the current
+branch tracks, then `origin`, then the only remote on a code host. If none
+qualifies, review-assist refuses to start. Other remotes are ignored.
+_Avoid_: Origin, upstream
+
 **Owner**:
 The account or organisation that holds a repository. On Bitbucket this is the
 workspace.
