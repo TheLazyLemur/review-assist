@@ -249,6 +249,20 @@ class Status(unittest.TestCase):
         self.assertEqual(0, code, err)
         self.assertEqual([("edit", 22, {"assign": True})], calls)
 
+    def test_todo_on_a_task_already_at_todo_writes_nothing(self):
+        # given
+        # ... a task at todo: open, no ready label, nobody assigned
+        model = [task_(5, "T")]
+
+        # when
+        # ... it is set to todo
+        code, _, err, calls = run(model, "issue.update", "5", "--status", "todo")
+
+        # then
+        # ... there is nothing to change, so nothing is sent to gh
+        self.assertEqual(0, code, err)
+        self.assertEqual([], calls)
+
     def test_ready_adds_the_label(self):
         # given
         # ... a task at todo

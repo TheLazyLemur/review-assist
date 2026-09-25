@@ -582,7 +582,7 @@ def cmd_update(a, model, gh):
         return
     if i.closed:
         gh.reopen(a.n)
-    if a.status == "todo":
+    if a.status == "todo" and (READY in i.labels or i.assignees):
         gh.edit(a.n, remove_label=READY if READY in i.labels else None, assign=False if i.assignees else None)
     elif a.status == "ready" and READY not in i.labels:
         gh.edit(a.n, add_label=READY)
