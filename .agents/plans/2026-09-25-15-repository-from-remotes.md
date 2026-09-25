@@ -35,7 +35,7 @@ no git remote points at a supported code host (GitHub, Bitbucket)
 
 ```
 several git remotes point at code hosts; check out a branch that tracks one
-  acme   bitbucket.org/acme/scheduler
+  acme    bitbucket.org/acme/scheduler
   mirror  bitbucket.org/acme-mirror/scheduler
 ```
 
@@ -64,10 +64,10 @@ Candidates are listed in `git remote` order, names padded to one column.
    - `origin` when nothing is tracked
    - the only remote on a code host, no `origin`, nothing tracked (add a
      remote on an unsupported host alongside it)
-   - the scheduler clone (`acme` → `bitbucket.org:acme/scheduler`,
+   - a scheduler clone (`acme` → `bitbucket.org:acme/scheduler`,
      `mirror` → `bitbucket.org:acme-mirror/scheduler`)
      tracking `acme` picks acme
-   - the scheduler clone tracking nothing refuses with the several-remotes
+   - that clone tracking nothing refuses with the several-remotes
      message listing both
    - no remote on a supported host refuses with the no-remote message
    - `github.com` → GitHub; `ghe.example.com` (logged in) → GitHub on
@@ -110,5 +110,5 @@ Candidates are listed in `git remote` order, names padded to one column.
   detection. It needs a TTY for the TUI; check detection by running
   resolveTarget from a test or by reading the error it prints, not by driving
   the TUI.
-- In `~/src/storefront`, running the
+- In a clone of `acme/storefront`, running the
   built binary prints the Bitbucket-not-supported error.

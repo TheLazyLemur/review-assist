@@ -40,9 +40,9 @@ the clone. It uses the first of these that points at a supported code host:
 2. `origin`
 3. the only remote on a supported code host
 
-Other remotes are ignored. the scheduler clone has two remotes on bitbucket.org,
-`acme` and `mirror`, and none called `origin`. Its `develop` branch tracks
-`acme/develop`, so review-assist uses `acme`. On a branch that tracks
+Other remotes are ignored. Say a clone has two remotes on bitbucket.org,
+`acme` and `mirror`, and none called `origin`. If its `develop` branch tracks
+`acme/develop`, review-assist uses `acme`. On a branch that tracks
 nothing, neither step 2 nor step 3 applies, so it refuses to start.
 
 When no remote points at a supported code host, it lists the remotes it
@@ -58,7 +58,7 @@ When several do and the rule picks none, it lists them:
 
 ```
 review-assist: several git remotes point at code hosts; check out a branch that tracks one
-  acme   bitbucket.org/acme/scheduler
+  acme    bitbucket.org/acme/scheduler
   mirror  bitbucket.org/acme-mirror/scheduler
 ```
 

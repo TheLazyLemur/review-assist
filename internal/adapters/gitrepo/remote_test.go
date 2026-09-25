@@ -22,9 +22,9 @@ var urlForms = []struct {
 
 func fakePlatforms(hostname string) (pr.Platform, bool, error) {
 	platform, ok := map[string]pr.Platform{
-		"github.com":    pr.GitHub,
-		"ghe.example.com":   pr.GitHub,
-		"bitbucket.org": pr.Bitbucket,
+		"github.com":      pr.GitHub,
+		"ghe.example.com": pr.GitHub,
+		"bitbucket.org":   pr.Bitbucket,
 	}[hostname]
 	return platform, ok, nil
 }
@@ -36,12 +36,12 @@ func errText(err error) string {
 	return err.Error()
 }
 
-const acmeRefusal = `several git remotes point at code hosts; check out a branch that tracks one
-  acme   bitbucket.org/acme/scheduler
+const severalRemotesRefusal = `several git remotes point at code hosts; check out a branch that tracks one
+  acme    bitbucket.org/acme/scheduler
   mirror  bitbucket.org/acme-mirror/scheduler`
 
 func TestPickRemote(t *testing.T) {
-	acme := []remote{
+	twoBitbucket := []remote{
 		{"acme", "bitbucket.org", "acme/scheduler"},
 		{"mirror", "bitbucket.org", "acme-mirror/scheduler"},
 	}
@@ -78,15 +78,15 @@ func TestPickRemote(t *testing.T) {
 			want: pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "team", Name: "app"},
 		},
 		{
-			name:    "the scheduler clone on develop tracking acme/develop",
-			remotes: acme,
+			name:    "scheduler on develop tracking acme/develop",
+			remotes: twoBitbucket,
 			tracked: "acme",
 			want:    pr.Repo{Platform: pr.Bitbucket, Hostname: "bitbucket.org", Owner: "acme", Name: "scheduler"},
 		},
 		{
-			name:    "the scheduler clone on a branch that tracks nothing",
-			remotes: acme,
-			err:     acmeRefusal,
+			name:    "scheduler on a branch that tracks nothing",
+			remotes: twoBitbucket,
+			err:     severalRemotesRefusal,
 		},
 		{
 			name:    "no remote on a supported code host",
