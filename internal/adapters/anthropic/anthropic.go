@@ -1,4 +1,4 @@
-// Package anthropic implements review.Model over the Anthropic Messages API
+// Package anthropic implements review.Agent over the Anthropic Messages API
 // (<base URL>/v1/messages) with the official SDK. Any compatible endpoint
 // works: Ollama, Anthropic, or a proxy.
 package anthropic
@@ -22,97 +22,117 @@ type Config struct {
 	// Think leaves the model's extended thinking on. Off by default: agents
 	// reason through their tool calls, and thinking multiplies turn latency.
 	Think bool
-	// LogPath, when set, receives one line per model call (timing, tokens).
+	// LogPath gets one line per model call (timing, tokens).
 	LogPath string
 }
 
-type Model struct {
+type Agent struct {
 	cfg    Config
 	client sdk.Client
 }
 
-var _ review.Model = (*Model)(nil)
+var _ review.Agent = (*Agent)(nil)
 
-func New(cfg Config) *Model {
+func New(cfg Config) *Agent {
 	if cfg.BaseURL == "" || cfg.APIKey == "" || cfg.Model == "" {
 		panic(fmt.Sprintf("anthropic.New: base URL, API key and model are required (url=%q model=%q key set=%v)",
 			cfg.BaseURL, cfg.Model, cfg.APIKey != ""))
 	}
-	return &Model{cfg: cfg, client: sdk.NewClient(
+	return &Agent{cfg: cfg, client: sdk.NewClient(
 		option.WithBaseURL(cfg.BaseURL),
 		option.WithAPIKey(cfg.APIKey),
 		option.WithMaxRetries(2),
 	)}
 }
 
-func (m *Model) Start(label, system string, tools []review.ToolSpec) review.Conversation {
-	params := make([]sdk.ToolUnionParam, 0, len(tools))
-	for _, t := range tools {
-		params = append(params, sdk.ToolUnionParam{OfTool: &sdk.ToolParam{
+func (a *Agent) Run(ctx context.Context, task review.Task) error {
+	if task.Done == nil || task.FinishTool == "" || task.MaxTurns < 4 {
+		panic(fmt.Sprintf("anthropic.Run: incomplete task %q", task.Name))
+	}
+	tools := make([]sdk.ToolUnionParam, 0, len(task.Tools))
+	byName := make(map[string]review.Tool, len(task.Tools))
+	for _, t := range task.Tools {
+		byName[t.Name] = t
+		tools = append(tools, sdk.ToolUnionParam{OfTool: &sdk.ToolParam{
 			Name:        t.Name,
 			Description: sdk.String(t.Description),
 			InputSchema: sdk.ToolInputSchemaParam{Properties: t.Properties, Required: t.Required},
 		}})
 	}
-	return &conversation{m: m, label: label, system: system, tools: params}
-}
+	nudge := func(text string) sdk.ContentBlockParamUnion { return sdk.NewTextBlock(text) }
+	next := []sdk.ContentBlockParamUnion{sdk.NewTextBlock(task.Prompt)}
+	var messages []sdk.MessageParam
+	nudged := false
 
-type conversation struct {
-	m        *Model
-	label    string
-	system   string
-	tools    []sdk.ToolUnionParam
-	messages []sdk.MessageParam
-	turn     int
-}
-
-func (c *conversation) Send(ctx context.Context, in review.Input) (review.Reply, error) {
-	var blocks []sdk.ContentBlockParamUnion
-	for _, r := range in.Results {
-		blocks = append(blocks, sdk.NewToolResultBlock(r.CallID, r.Content, r.IsError))
-	}
-	for _, t := range in.Text {
-		blocks = append(blocks, sdk.NewTextBlock(t))
-	}
-	if len(blocks) == 0 {
-		return review.Reply{}, fmt.Errorf("anthropic: empty user turn")
-	}
-	c.messages = append(c.messages, sdk.NewUserMessage(blocks...))
-
-	params := sdk.MessageNewParams{
-		Model:     sdk.Model(c.m.cfg.Model),
-		MaxTokens: 8192,
-		System:    []sdk.TextBlockParam{{Text: c.system}},
-		Messages:  c.messages,
-		Tools:     c.tools,
-	}
-	if !c.m.cfg.Think {
-		params.Thinking = sdk.ThinkingConfigParamUnion{OfDisabled: &sdk.ThinkingConfigDisabledParam{}}
-	}
-	start := time.Now()
-	resp, err := c.m.client.Messages.New(ctx, params)
-	c.m.log(c.label, c.turn, start, resp, err)
-	c.turn++
-	if err != nil {
-		return review.Reply{}, err
-	}
-	// Keep the full reply (thinking blocks included) so the history stays valid.
-	c.messages = append(c.messages, resp.ToParam())
-
-	reply := review.Reply{Truncated: resp.StopReason == sdk.StopReasonMaxTokens}
-	for _, b := range resp.Content {
-		if tu, ok := b.AsAny().(sdk.ToolUseBlock); ok {
-			reply.Calls = append(reply.Calls, review.ToolCall{ID: tu.ID, Name: tu.Name, Input: tu.Input})
+	for turn := 0; turn < task.MaxTurns; turn++ {
+		if turn == task.MaxTurns-3 {
+			next = append(next, nudge(fmt.Sprintf("You are nearly out of turns. Call %s now with what you have verified.", task.FinishTool)))
 		}
+		messages = append(messages, sdk.NewUserMessage(next...))
+		params := sdk.MessageNewParams{
+			Model:     sdk.Model(a.cfg.Model),
+			MaxTokens: 8192,
+			System:    []sdk.TextBlockParam{{Text: task.System}},
+			Messages:  messages,
+			Tools:     tools,
+		}
+		if !a.cfg.Think {
+			params.Thinking = sdk.ThinkingConfigParamUnion{OfDisabled: &sdk.ThinkingConfigDisabledParam{}}
+		}
+		start := time.Now()
+		resp, err := a.client.Messages.New(ctx, params)
+		a.log(task.Name, turn, start, resp, err)
+		if err != nil {
+			return fmt.Errorf("model call: %w", err)
+		}
+		// Keep the full reply (thinking blocks included) so the history stays valid.
+		messages = append(messages, resp.ToParam())
+
+		next = nil
+		for _, b := range resp.Content {
+			tu, ok := b.AsAny().(sdk.ToolUseBlock)
+			if !ok {
+				continue
+			}
+			tool, ok := byName[tu.Name]
+			if !ok {
+				next = append(next, sdk.NewToolResultBlock(tu.ID, fmt.Sprintf("error: unknown tool %q", tu.Name), true))
+				continue
+			}
+			out, err := tool.Call(ctx, tu.Input)
+			if err != nil {
+				next = append(next, sdk.NewToolResultBlock(tu.ID, "error: "+err.Error(), true))
+				continue
+			}
+			next = append(next, sdk.NewToolResultBlock(tu.ID, out, false))
+		}
+		if task.Done() {
+			return nil
+		}
+
+		if len(next) > 0 {
+			continue
+		}
+		if resp.StopReason == sdk.StopReasonMaxTokens {
+			next = []sdk.ContentBlockParamUnion{nudge(fmt.Sprintf("Your reply was cut off. Be brief and call %s.", task.FinishTool))}
+			continue
+		}
+		// The model stopped talking without a tool call. Small models do this;
+		// remind once, then give up.
+		if nudged {
+			return nil
+		}
+		nudged = true
+		next = []sdk.ContentBlockParamUnion{nudge(fmt.Sprintf("You must finish by calling the %s tool. Do not answer in prose.", task.FinishTool))}
 	}
-	return reply, nil
+	return fmt.Errorf("agent used all %d turns", task.MaxTurns)
 }
 
-func (m *Model) log(agent string, turn int, start time.Time, resp *sdk.Message, err error) {
-	if m.cfg.LogPath == "" {
+func (a *Agent) log(agent string, turn int, start time.Time, resp *sdk.Message, err error) {
+	if a.cfg.LogPath == "" {
 		return
 	}
-	f, ferr := os.OpenFile(m.cfg.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, ferr := os.OpenFile(a.cfg.LogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if ferr != nil {
 		return
 	}

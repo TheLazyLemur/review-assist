@@ -42,30 +42,43 @@ func message(stop string, content ...string) string {
 		`","usage":{"input_tokens":1,"output_tokens":1},"content":[` + strings.Join(content, ",") + `]}`
 }
 
-func TestConversationSpeaksTheAnthropicMessagesWireFormat(t *testing.T) {
+func TestAgentLoopsOverTheMessagesAPIUntilTheTaskIsDone(t *testing.T) {
 	// given
-	// ... a server that answers a tool call (after a thinking block), then plain text
+	// ... a server that answers with a tool call (after a thinking block), then the finishing call
 	srv := &fakeServer{responses: []string{
 		message("tool_use", `{"type":"thinking","thinking":"look","signature":""}`, `{"type":"tool_use","id":"t1","name":"get_diff","input":{"path":"a.go"}}`),
-		message("end_turn", `{"type":"text","text":"done"}`),
+		message("tool_use", `{"type":"tool_use","id":"t2","name":"finish","input":{}}`),
 	}}
 	hs := httptest.NewServer(srv)
 	defer hs.Close()
-	model := anthropic.New(anthropic.Config{BaseURL: hs.URL, APIKey: "sk-test", Model: "fake"})
-	conv := model.Start("agent", "be careful", []review.ToolSpec{{Name: "get_diff", Description: "d", Properties: map[string]any{}}})
+	agent := anthropic.New(anthropic.Config{BaseURL: hs.URL, APIKey: "sk-test", Model: "fake"})
+	var gotInput string
+	done := false
+	task := review.Task{
+		Name: "agent", System: "be careful", Prompt: "review this", MaxTurns: 10, FinishTool: "finish",
+		Done: func() bool { return done },
+		Tools: []review.Tool{
+			{Name: "get_diff", Description: "d", Properties: map[string]any{},
+				Call: func(_ context.Context, in json.RawMessage) (string, error) {
+					gotInput = string(in)
+					return "R2 +y := x / 0", nil
+				}},
+			{Name: "finish", Description: "f", Properties: map[string]any{},
+				Call: func(context.Context, json.RawMessage) (string, error) { done = true; return "ok", nil }},
+		},
+	}
 
 	// when
-	// ... the core sends a prompt, then the tool result
-	first, err1 := conv.Send(context.Background(), review.Input{Text: []string{"review this"}})
-	_, err2 := conv.Send(context.Background(), review.Input{Results: []review.ToolResult{{CallID: "t1", Content: "R2 +y := x / 0"}}})
+	// ... the agent runs the task
+	err := agent.Run(context.Background(), task)
 
 	// then
-	// ... the tool call comes back to the core in port types
-	if err1 != nil || err2 != nil {
-		t.Fatal(err1, err2)
+	// ... it called the tool with the model's input and stopped once the task was done
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(first.Calls) != 1 || first.Calls[0].ID != "t1" || first.Calls[0].Name != "get_diff" || string(first.Calls[0].Input) != `{"path":"a.go"}` {
-		t.Fatalf("unexpected calls %+v", first.Calls)
+	if gotInput != `{"path":"a.go"}` || !done || len(srv.requests) != 2 {
+		t.Fatalf("input %q done %v requests %d", gotInput, done, len(srv.requests))
 	}
 
 	// ... every request carried the key, the tools, and disabled thinking
@@ -77,6 +90,7 @@ func TestConversationSpeaksTheAnthropicMessagesWireFormat(t *testing.T) {
 			Content []struct {
 				Type      string
 				ToolUseID string `json:"tool_use_id"`
+				Content   any
 			}
 		}
 	}
@@ -88,8 +102,8 @@ func TestConversationSpeaksTheAnthropicMessagesWireFormat(t *testing.T) {
 	if err := json.Unmarshal([]byte(srv.requests[1]), &req); err != nil {
 		t.Fatal(err)
 	}
-	if len(req.Tools) != 1 || req.Tools[0].Name != "get_diff" || req.Thinking.Type != "disabled" {
-		t.Errorf("want tool get_diff and thinking disabled, got %+v", req)
+	if len(req.Tools) != 2 || req.Tools[0].Name != "get_diff" || req.Thinking.Type != "disabled" {
+		t.Errorf("want both tools and thinking disabled, got %+v", req)
 	}
 
 	// ... and the second request replays the history with the assistant turn and the tool_result
