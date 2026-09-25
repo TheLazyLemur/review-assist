@@ -156,8 +156,12 @@ func (d commentDTO) toDomain() (pr.Comment, error) {
 		}
 		a := &pr.Anchor{Path: d.Inline.Path}
 		a.Line, a.Side = lineOnSide(d.Inline.From, d.Inline.To)
-		if start, side := lineOnSide(d.Inline.StartFrom, d.Inline.StartTo); a.Line > 0 && start > 0 && start != a.Line {
-			a.StartLine, a.StartSide = start, side
+		start, startSide := lineOnSide(d.Inline.StartFrom, d.Inline.StartTo)
+		if start > 0 && a.Line == 0 {
+			return pr.Comment{}, fmt.Errorf("comment %d: range start without an end line", d.ID)
+		}
+		if start > 0 && (start != a.Line || startSide != a.Side) {
+			a.StartLine, a.StartSide = start, startSide
 		}
 		c.Anchor = a
 	}

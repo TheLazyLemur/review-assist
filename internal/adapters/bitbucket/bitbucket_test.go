@@ -547,14 +547,15 @@ func TestCommentsMapWhereEachPoints(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprintf(w, `{"values":[%s,%s,%s,%s,%s,%s,%s]}`,
+		fmt.Fprintf(w, `{"values":[%s,%s,%s,%s,%s,%s,%s,%s]}`,
 			commentJSON(1, ""),
 			commentJSON(2, `,"inline":{"path":"a.go","from":null,"to":null}`),
 			commentJSON(3, `,"inline":{"path":"b.go","from":4,"to":5}`),
 			commentJSON(4, `,"inline":{"path":"c.go","from":6,"to":null}`),
 			commentJSON(5, `,"inline":{"path":"d.go","from":null,"to":9,"start_from":null,"start_to":7}`),
 			commentJSON(6, `,"inline":{"path":"e.go","from":null,"to":9,"start_from":3,"start_to":null}`),
-			commentJSON(7, `,"inline":{"path":"f.go","from":null,"to":9,"start_from":null,"start_to":9}`))
+			commentJSON(7, `,"inline":{"path":"f.go","from":null,"to":9,"start_from":null,"start_to":9}`),
+			commentJSON(8, `,"inline":{"path":"g.go","from":null,"to":9,"start_from":9,"start_to":null}`))
 	})
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
 
@@ -576,6 +577,7 @@ func TestCommentsMapWhereEachPoints(t *testing.T) {
 		{ID: 5, Author: "dan", Body: "c5", CreatedAt: at, Anchor: &pr.Anchor{Path: "d.go", Line: 9, Side: diff.Head, StartLine: 7, StartSide: diff.Head}},
 		{ID: 6, Author: "dan", Body: "c6", CreatedAt: at, Anchor: &pr.Anchor{Path: "e.go", Line: 9, Side: diff.Head, StartLine: 3, StartSide: diff.Base}},
 		{ID: 7, Author: "dan", Body: "c7", CreatedAt: at, Anchor: &pr.Anchor{Path: "f.go", Line: 9, Side: diff.Head}},
+		{ID: 8, Author: "dan", Body: "c8", CreatedAt: at, Anchor: &pr.Anchor{Path: "g.go", Line: 9, Side: diff.Head, StartLine: 9, StartSide: diff.Base}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("want %+v, got %+v", want, got)
@@ -681,6 +683,25 @@ func TestCommentsRejectAnInlineCommentWithNoPath(t *testing.T) {
 	// ... an inline comment without the path Bitbucket's schema requires
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"values":[%s]}`, commentJSON(42, `,"inline":{"from":null,"to":3}`))
+	})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
+
+	// when
+	// ... the comments are read
+	_, err := c.Comments(context.Background(), 7)
+
+	// then
+	// ... it fails naming the comment
+	if err == nil || !strings.Contains(err.Error(), "42") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestCommentsRejectARangeStartWithNoEndLine(t *testing.T) {
+	// given
+	// ... an inline comment with a range start but neither from nor to
+	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"values":[%s]}`, commentJSON(42, `,"inline":{"path":"a.go","from":null,"to":null,"start_to":3}`))
 	})
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo)
 
