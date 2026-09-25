@@ -18,7 +18,14 @@ review-assist 41                  # open PR 41 of that repo
 review-assist https://ghe.example.com/acme/widgets/pull/41
 review-assist OWNER/REPO#12       # github.com
 review-assist HOST/OWNER/REPO#12  # any host
+review-assist --init              # write a first config file that uses Claude Code
 ```
+
+`--init` asks for a token from `claude setup-token` and writes a config file
+that uses the `claude-code` backend. Paste a token you already have, or press
+enter and it runs `claude setup-token` for you. The token is read without echo.
+The file is created readable by you only, and `--init` never overwrites an
+existing file.
 
 ## Settings
 
@@ -80,8 +87,9 @@ Keys and tokens in the file are secrets: keep it private (`chmod 600`).
   models here spent their whole token budget thinking and each turn took
   20–40 s.
 - **`claude-code`** runs the `claude` CLI, which loops by itself, through
-  [pi-claude](https://github.com/TheLazyLemur/pi-claude). Mint a token with
-  `claude setup-token` and put it in `claude_code.token`. claude runs in bare
+  [pi-claude](https://github.com/TheLazyLemur/pi-claude). Run
+  `review-assist --init`, or mint a token with `claude setup-token` and put it
+  in `claude_code.token` yourself. claude runs in bare
   mode on that token, with no built-in tools, no settings files, no MCP servers
   and an empty working directory, so the review tools are the only tools it
   has. Bare mode taking the token as `ANTHROPIC_AUTH_TOKEN` is undocumented: if

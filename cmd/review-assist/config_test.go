@@ -85,3 +85,40 @@ func assertEqual[T comparable](t *testing.T, want, got T) {
 		t.Errorf("want %v, got %v", want, got)
 	}
 }
+
+func TestInitWritesAPrivateClaudeCodeConfigOnce(t *testing.T) {
+	// given
+	// ... no config file yet, in a directory that does not exist
+	path := filepath.Join(t.TempDir(), "review-assist", "config.json")
+
+	// when
+	// ... init writes a token, then tries again
+	err := writeInitConfig(path, "sk-ant-oat01-abc")
+	again := writeInitConfig(path, "sk-ant-oat01-other")
+
+	// then
+	// ... the file loads as a claude-code config with that token
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseConfig(nil, func(string) string { return "" }, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, "claude-code", cfg.backend)
+	assertEqual(t, "sk-ant-oat01-abc", cfg.claude.Token)
+
+	// ... only the owner can read it
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEqual(t, os.FileMode(0o600), info.Mode().Perm())
+
+	// ... and the second write fails without touching the file
+	if again == nil {
+		t.Error("want an error when the config file already exists")
+	}
+	cfg, _ = parseConfig(nil, func(string) string { return "" }, path)
+	assertEqual(t, "sk-ant-oat01-abc", cfg.claude.Token)
+}

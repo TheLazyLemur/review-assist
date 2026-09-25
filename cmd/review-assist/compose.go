@@ -69,6 +69,9 @@ func run(args []string) error {
 	}
 	userConfig, _ := os.UserConfigDir() // only used off unix-likes
 	path := configPath(runtime.GOOS, home, os.Getenv("XDG_CONFIG_HOME"), userConfig)
+	if len(args) == 1 && (args[0] == "--init" || args[0] == "-init") {
+		return runInit(path)
+	}
 	cfg, err := parseConfig(args, os.Getenv, path)
 	if err != nil {
 		return err
@@ -157,6 +160,7 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 	fs.IntVar(&cfg.maxTurns, "max-turns", cfg.maxTurns, "max model turns per agent (min 4)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: review-assist [flags] [PR]
+       review-assist --init    write a first config file that uses Claude Code
 
 With no PR, lists pull requests of the GitHub repository in the current directory.
 PR may be a number (in the current repository), a PR URL on github.com or a
