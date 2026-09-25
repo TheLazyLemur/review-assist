@@ -17,7 +17,7 @@ The `tracker` skill owns the model and the dispatcher; the raw `gh` commands
 are in `docs/agents/issue-tracker.md`.
 
 Write slices with `to-slice`, their tasks with `to-tasks`, and take a task to
-ready with `refine-task`, rather than by hand. Run `tracker.py validate` before
+ready with `refine-task`, rather than by hand. Run `./tracker validate` before
 finishing work that touched the tracker.
 
 Specs live in `.agents/specs/` and plans in `.agents/plans/`, one file per task,

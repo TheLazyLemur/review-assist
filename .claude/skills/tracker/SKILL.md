@@ -26,16 +26,19 @@ ready with `refine-task`, rather than by hand.
 
 ## The dispatcher
 
-Read and write through `.claude/skills/tracker/scripts/tracker.py`. It runs
-`gh`, which uses your own `gh auth login`, and loads the whole repo in one
-query.
+Read and write through `./tracker` at the repo root. It builds the Go program
+in `tools/tracker/` (a no-op when nothing changed) and runs it in your current
+directory. It runs `gh`, which uses your own `gh auth login`, and loads the
+whole repo in one query.
 
 ```sh
-tracker=.claude/skills/tracker/scripts/tracker.py   # path is from the repo root
-./board                  # what can start, what is in progress, what is blocked
-$tracker validate        # exits non-zero on any problem
-$tracker --help
+./board                # what can start, what is in progress, what is blocked
+./tracker validate     # exits non-zero on any problem
+./tracker --help
 ```
+
+A blocker can be an issue in another repository. It shows as `owner/repo#n`
+and counts as unmet until GitHub reports it closed as completed.
 
 It refuses what GitHub would accept but the model forbids: a pull request
 number (issues and pull requests share one number space), a dependency cycle,
@@ -64,6 +67,10 @@ can be captured. After adding tasks or dependencies to a slice, run
 `slice.sync`: it rewrites the slice's Tasks section (the task list, what can
 start now, and a mermaid graph) from the issues, so it never drifts. `validate`
 reports a stale section.
+
+`go test ./tools/...` covers every method and refusal against a fake GitHub,
+so it touches no network and no issue. It does not prove the query against
+GitHub: after changing the query, run `./board` once against a throwaway repo.
 
 ## Status
 

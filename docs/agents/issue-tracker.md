@@ -1,7 +1,7 @@
 # Issue tracker: GitHub
 
 Issues for this repo live as GitHub issues, as slices and tasks. Write through
-the dispatcher, `.claude/skills/tracker/scripts/tracker.py`, described in the
+the dispatcher, `./tracker`, described in the
 `tracker` skill. The raw `gh` commands below are for reads it does not cover;
 `gh` infers the repo from `git remote -v` when run inside the clone.
 
@@ -40,7 +40,7 @@ Traps, all observed:
 - `sub_issues_summary` lags a write too, and it counts a task closed as not
   planned as completed. The dispatcher counts from the issues instead.
 - A slice stays open when its last task closes, even at 100%. Close it with
-  `tracker.py issue.update <slice> --status done`.
+  `./tracker issue.update <slice> --status done`.
 - A sub-issue list has an order, and GitHub shows it. It means nothing here:
   depends on is the only order between tasks.
 
@@ -50,9 +50,9 @@ Traps, all observed:
 
 ## When a skill says "publish to the issue tracker"
 
-Create a task with `tracker.py task.create`, or a slice with `slice.create`.
+Create a task with `./tracker task.create`, or a slice with `slice.create`.
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `tracker.py issue.get <number>`, and `gh issue view <number> --comments`
+Run `./tracker issue.get <number>`, and `gh issue view <number> --comments`
 for the comments.

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Builds tools/tracker into .bin/ (a no-op when nothing changed) and runs it in
+# the caller's directory, so --body-file paths stay relative to where you are.
+root=$(cd "$(dirname "$0")" && pwd)
+go -C "$root" build -o .bin/tracker ./tools/tracker || exit
+exec "$root/.bin/tracker" "$@"

@@ -58,7 +58,7 @@ ADR or spec already covers the chunk, a new spec is ceremony.
 4. **Create the slice** with the dispatcher. Fill every part:
 
    ```sh
-   .claude/skills/tracker/scripts/tracker.py slice.create \
+   ./tracker slice.create \
      --title "Bitbucket pull requests cannot be reviewed" \
      --goal "..." --demo "..." \
      --implements "ADR 0002: ..." --out-of-scope "... (goes to #n)" \

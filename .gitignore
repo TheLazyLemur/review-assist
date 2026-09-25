@@ -2,4 +2,4 @@
 /.claude/*
 !/.claude/skills/
 /.serena/
-__pycache__/
+/.bin/
