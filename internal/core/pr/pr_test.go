@@ -75,13 +75,15 @@ func (h *recordingHost) PostComment(_ context.Context, _ int, c pr.NewComment) e
 	return nil
 }
 
-var ownPRRepo = pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "o", Name: "r"}
+// anyRepo only satisfies NewService: the host, not the platform, decides
+// what a verdict on an own pull request does.
+var anyRepo = pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "o", Name: "r"}
 
 func TestVerdictOnYourOwnPRPostsAsAHeadedCommentWhenTheHostRefusesIt(t *testing.T) {
 	// given
 	// ... a host that refuses a verdict from the author, a PR opened by the viewer (logins differ only in case), and one opened by someone else
 	host := &recordingHost{acceptsVerdictFromAuthor: false}
-	svc := pr.NewService(host, ownPRRepo)
+	svc := pr.NewService(host, anyRepo)
 	own := &pr.PR{Summary: pr.Summary{Number: 1, Author: "TheLazyLemur"}}
 	other := &pr.PR{Summary: pr.Summary{Number: 2, Author: "someone"}}
 	ctx := context.Background()
@@ -120,7 +122,7 @@ func TestVerdictOnYourOwnPRIsSentWhenTheHostAcceptsIt(t *testing.T) {
 	// given
 	// ... a host that accepts a verdict from the author, and a PR opened by the viewer
 	host := &recordingHost{acceptsVerdictFromAuthor: true}
-	svc := pr.NewService(host, ownPRRepo)
+	svc := pr.NewService(host, anyRepo)
 	own := &pr.PR{Summary: pr.Summary{Number: 1, Author: "TheLazyLemur"}}
 	ctx := context.Background()
 

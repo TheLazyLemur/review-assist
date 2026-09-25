@@ -157,7 +157,6 @@ func (m *Model) requestChanges() tea.Cmd {
 	return m.verdictEditor(pr.RequestChanges, fmt.Sprintf("Request changes on #%d", m.pr.number), "Explain what needs to change.", true)
 }
 
-// verdictEditor warns up front when the verdict will post as a comment.
 func (m *Model) verdictEditor(decision pr.Decision, title, hint string, required bool) tea.Cmd {
 	p, viewer := m.pr.data.PR, m.viewer
 	if m.deps.PRs.VerdictPostsAsComment(p, viewer) {

@@ -4,7 +4,8 @@ On an own pull request, review-assist posts a comment headed with the verdict
 instead of the verdict, because GitHub refuses one from the author: its API
 answers `Can not approve your own pull request` and `Can not request changes
 on your own pull request`. Bitbucket Cloud does not refuse. So the own-PR rule
-applies on GitHub only; on Bitbucket the verdict is sent, and the pull request
+applies where the code host refuses a verdict from the author (today,
+GitHub); on Bitbucket the verdict is sent, and the pull request
 shows the approval or the request for changes. The code host reports this
 through the port (`AcceptsVerdictFromAuthor`), so the core stays blind to the
 platform, as ADR 0002 requires.
@@ -27,3 +28,5 @@ The pull request then listed its author as a participant in that state.
 - **Keep the comment on Bitbucket too**, so both platforms behave the same.
   Rejected: an approval that Bitbucket would record becomes a plain comment,
   and the pull request shows no approval.
+- **Check the platform in the core.** Rejected: ADR 0002 keeps the core
+  platform-blind. The code host answers through the port instead.
