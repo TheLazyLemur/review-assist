@@ -90,8 +90,17 @@ func TestPickRemote(t *testing.T) {
 		},
 		{
 			name:    "no remote on a supported code host",
-			remotes: []remote{{"origin", "gitlab.com", "team/app"}},
-			err:     "no git remote points at a supported code host (GitHub, Bitbucket)",
+			remotes: []remote{{"origin", "gitlab.com", "team/app"}, {"mirror", "gitlab.com", "team/app-mirror"}},
+			err: `no git remote points at a supported code host (GitHub, Bitbucket)
+  origin  gitlab.com/team/app
+  mirror  gitlab.com/team/app-mirror`,
+		},
+		{
+			// Every URL form parses to the alias, so the refusal is the same in each.
+			name:    "an SSH host alias is not a supported code host",
+			remotes: []remote{{"origin", "github-work", "TheLazyLemur/review-assist"}},
+			err: `no git remote points at a supported code host (GitHub, Bitbucket)
+  origin  github-work/TheLazyLemur/review-assist`,
 		},
 		{
 			name:    "github.com is GitHub",
@@ -188,5 +197,26 @@ func TestPickRemoteDoesNotLookUpRemotesTheRuleDoesNotReach(t *testing.T) {
 	want := pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "team", Name: "app"}
 	if repo != want {
 		t.Fatalf("want %+v, got %+v", want, repo)
+	}
+}
+
+func TestNoCodeHostRefusalShowsARemoteItCannotParseByItsURL(t *testing.T) {
+	// given
+	// ... a remote on a local path, and no remotes at all
+	remotes := []gitrepo.Remote{{Name: "backup", URL: "/srv/git/app.git"}}
+
+	// when
+	// ... the remote is picked from each
+	_, err := gitrepo.PickRemote(remotes, "", fakePlatforms)
+	_, noneErr := gitrepo.PickRemote(nil, "", fakePlatforms)
+
+	// then
+	// ... the local path is listed as it is, and with no remotes only the first line is printed
+	want := "no git remote points at a supported code host (GitHub, Bitbucket)\n  backup  /srv/git/app.git"
+	if errText(err) != want {
+		t.Errorf("want %q, got %q", want, errText(err))
+	}
+	if errText(noneErr) != "no git remote points at a supported code host (GitHub, Bitbucket)" {
+		t.Errorf("no remotes: got %q", errText(noneErr))
 	}
 }

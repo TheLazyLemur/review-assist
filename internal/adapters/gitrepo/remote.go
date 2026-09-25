@@ -87,36 +87,53 @@ func PickRemote(remotes []Remote, tracked string, platformOf PlatformOf) (pr.Rep
 			}
 		}
 	}
-	type candidate struct {
-		remote string
-		repo   pr.Repo
-	}
-	var candidates []candidate
+	var candidates []pr.Repo
+	var onHosts, ignored []listed
 	for _, r := range remotes {
 		repo, ok, err := lookUp(r, platformOf)
 		if err != nil {
 			return pr.Repo{}, err
 		}
 		if ok {
-			candidates = append(candidates, candidate{r.Name, repo})
+			candidates = append(candidates, repo)
+			onHosts = append(onHosts, listed{r.Name, repo.Qualified()})
+		} else {
+			ignored = append(ignored, listed{r.Name, shownURL(r.URL)})
 		}
 	}
 	switch len(candidates) {
 	case 0:
-		return pr.Repo{}, errors.New("no git remote points at a supported code host (GitHub, Bitbucket)")
+		return pr.Repo{}, refusal("no git remote points at a supported code host (GitHub, Bitbucket)", ignored)
 	case 1:
-		return candidates[0].repo, nil
+		return candidates[0], nil
 	}
+	return pr.Repo{}, refusal("several git remotes point at code hosts; check out a branch that tracks one", onHosts)
+}
+
+type listed struct{ remote, where string }
+
+// refusal lists the remotes under the reason, names padded to one column.
+func refusal(reason string, remotes []listed) error {
 	width := 0
-	for _, c := range candidates {
-		width = max(width, len(c.remote))
+	for _, r := range remotes {
+		width = max(width, len(r.remote))
 	}
 	var b strings.Builder
-	b.WriteString("several git remotes point at code hosts; check out a branch that tracks one")
-	for _, c := range candidates {
-		fmt.Fprintf(&b, "\n  %-*s  %s", width, c.remote, c.repo.Qualified())
+	b.WriteString(reason)
+	for _, r := range remotes {
+		fmt.Fprintf(&b, "\n  %-*s  %s", width, r.remote, r.where)
 	}
-	return pr.Repo{}, errors.New(b.String())
+	return errors.New(b.String())
+}
+
+// shownURL is HOSTNAME/OWNER/NAME as parsed, so an SSH host alias shows up as
+// the hostname review-assist saw, or the raw URL when it does not parse.
+func shownURL(raw string) string {
+	hostname, owner, name, ok := parseRemoteURL(raw)
+	if !ok {
+		return raw
+	}
+	return hostname + "/" + owner + "/" + name
 }
 
 // lookUp is false for a remote that is not on a supported code host.
