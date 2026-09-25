@@ -37,8 +37,8 @@ var _ review.Backend = (*Backend)(nil)
 
 func New(cfg Config) *Backend {
 	if cfg.BaseURL == "" || cfg.APIKey == "" || cfg.Model == "" || !cfg.Effort.Valid() {
-		panic(fmt.Sprintf("messagesapi.New: base URL, API key and model are required (url=%q model=%q key set=%v)",
-			cfg.BaseURL, cfg.Model, cfg.APIKey != ""))
+		panic(fmt.Sprintf("messagesapi.New: base URL, API key, model and a valid effort are required (url=%q model=%q effort=%q key set=%v)",
+			cfg.BaseURL, cfg.Model, cfg.Effort, cfg.APIKey != ""))
 	}
 	return &Backend{cfg: cfg, client: sdk.NewClient(
 		option.WithBaseURL(cfg.BaseURL),
