@@ -9,9 +9,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/TheLazyLemur/review-assist/internal/core/diff"
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 )
 
@@ -41,6 +43,9 @@ type branchRefDTO struct {
 	Branch struct {
 		Name string `json:"name"`
 	} `json:"branch"`
+	Commit struct {
+		Hash string `json:"hash"`
+	} `json:"commit"`
 }
 
 type summaryDTO struct {
@@ -84,6 +89,63 @@ var bitbucketStates = map[pr.State][]string{
 	pr.Merged: {"MERGED"},
 	pr.Closed: {"DECLINED", "SUPERSEDED"},
 	pr.All:    {"OPEN", "MERGED", "DECLINED", "SUPERSEDED"},
+}
+
+type pullRequestDTO struct {
+	summaryDTO
+	Description string    `json:"description"`
+	CreatedOn   time.Time `json:"created_on"`
+	Links       struct {
+		HTML struct {
+			Href string `json:"href"`
+		} `json:"html"`
+	} `json:"links"`
+	Participants []participantDTO `json:"participants"`
+}
+
+type participantDTO struct {
+	User           userDTO   `json:"user"`
+	State          *string   `json:"state"`
+	ParticipatedOn time.Time `json:"participated_on"`
+}
+
+var decisions = map[string]pr.Decision{"approved": pr.Approve, "changes_requested": pr.RequestChanges}
+
+type commentDTO struct {
+	ID      int64 `json:"id"`
+	Content struct {
+		Raw string `json:"raw"`
+	} `json:"content"`
+	User      userDTO   `json:"user"`
+	CreatedOn time.Time `json:"created_on"`
+	Deleted   bool      `json:"deleted"`
+	Parent    *struct {
+		ID int64 `json:"id"`
+	} `json:"parent"`
+	Inline *struct {
+		Path string `json:"path"`
+		From *int   `json:"from"`
+		To   *int   `json:"to"`
+	} `json:"inline"`
+}
+
+func (d commentDTO) toDomain() pr.Comment {
+	c := pr.Comment{ID: d.ID, Author: d.User.Nickname, Body: d.Content.Raw, CreatedAt: d.CreatedOn}
+	if d.Parent != nil {
+		c.ReplyTo = d.Parent.ID
+	}
+	if d.Inline != nil {
+		c.Anchor = &pr.Anchor{Path: d.Inline.Path}
+		// When both are set the line is context, which the domain anchors on
+		// the head side.
+		switch {
+		case d.Inline.To != nil:
+			c.Anchor.Line, c.Anchor.Side = *d.Inline.To, diff.Head
+		case d.Inline.From != nil:
+			c.Anchor.Line, c.Anchor.Side = *d.Inline.From, diff.Base
+		}
+	}
+	return c
 }
 
 type page[T any] struct {
@@ -131,22 +193,75 @@ func (c *Client) List(ctx context.Context, state pr.State) ([]pr.Summary, error)
 	return prs, nil
 }
 
+func (c *Client) Get(ctx context.Context, number int) (*pr.PR, error) {
+	var d pullRequestDTO
+	if err := c.get(ctx, c.baseURL+c.pullRequestPath(number, ""), &d); err != nil {
+		return nil, err
+	}
+	summary, err := d.summaryDTO.toDomain()
+	if err != nil {
+		return nil, err
+	}
+	p := &pr.PR{
+		Summary: summary, Body: d.Description, URL: d.Links.HTML.Href,
+		HeadSHA: d.Source.Commit.Hash, BaseSHA: d.Destination.Commit.Hash, CreatedAt: d.CreatedOn,
+	}
+	for _, part := range d.Participants {
+		// Null: a reviewer who has not decided yet, or someone who only commented.
+		if part.State == nil {
+			continue
+		}
+		dec, ok := decisions[*part.State]
+		if !ok {
+			return nil, fmt.Errorf("pull request %d: unknown participant state %q", number, *part.State)
+		}
+		p.Verdicts = append(p.Verdicts, pr.Verdict{Author: part.User.Nickname, Decision: dec, At: part.ParticipatedOn})
+	}
+	return p, nil
+}
+
+// Diff relies on net/http following Bitbucket's redirect with the
+// Authorization header, which it keeps only while the host stays the same.
+func (c *Client) Diff(ctx context.Context, number int) (string, error) {
+	body, err := c.do(ctx, c.baseURL+c.pullRequestPath(number, "/diff"))
+	return string(body), err
+}
+
+func (c *Client) Comments(ctx context.Context, number int) ([]pr.Comment, error) {
+	dtos, err := getAll[commentDTO](ctx, c, c.pullRequestPath(number, "/comments"), nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	var out []pr.Comment
+	for _, d := range dtos {
+		if d.Deleted {
+			continue
+		}
+		out = append(out, d.toDomain())
+	}
+	return out, nil
+}
+
 // ---- HTTP ----
+
+func (c *Client) pullRequestPath(number int, rest string) string {
+	return c.repoPath("pullrequests/" + strconv.Itoa(number) + rest)
+}
 
 func (c *Client) repoPath(rest string) string {
 	return "/repositories/" + url.PathEscape(c.repo.Owner) + "/" + url.PathEscape(c.repo.Name) + "/" + rest
 }
 
-// getAll reads the pages of a list endpoint until it has max values, or all
-// of them when max is 0.
-func getAll[T any](ctx context.Context, c *Client, path string, query url.Values, max int) ([]T, error) {
+// getAll reads the pages of a list endpoint until it has limit values, or all
+// of them when limit is 0.
+func getAll[T any](ctx context.Context, c *Client, path string, query url.Values, limit int) ([]T, error) {
 	q := url.Values{"pagelen": {"50"}}
 	for k, v := range query {
 		q[k] = v
 	}
 	next := c.baseURL + path + "?" + q.Encode()
 	var all []T
-	for next != "" && (max == 0 || len(all) < max) {
+	for next != "" && (limit == 0 || len(all) < limit) {
 		// next comes from the response body; the credentials must not follow
 		// it to another host.
 		if !strings.HasPrefix(next, c.baseURL+"/") {
@@ -159,8 +274,8 @@ func getAll[T any](ctx context.Context, c *Client, path string, query url.Values
 		all = append(all, p.Values...)
 		next = p.Next
 	}
-	if max > 0 && len(all) > max {
-		all = all[:max]
+	if limit > 0 && len(all) > limit {
+		all = all[:limit]
 	}
 	return all, nil
 }
