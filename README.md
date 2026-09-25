@@ -45,7 +45,10 @@ Vim style. Press `?` anywhere for the full list.
 - Diff: `j/k` lines, `]/[` files, `}/{` hunks, `h/l` scroll sideways, `c` inline comment,
   `v` then `c` comment on a line range, `F` file comment, `R` reply to the thread on the line,
   `D` delete my comment on the line, `t` hide comments, `f` hide file list, `n/N` next agent finding.
-- Editors: `alt+enter` submits (`ctrl+s` and `ctrl+enter` also work where your terminal passes them through; zellij takes `ctrl+s`), `esc` cancels (twice if you typed something).
+- Your own PR: GitHub refuses approve and request changes from a PR's author.
+  On your own PR, `a` and `x` post a comment review instead, headed
+  `**Approved**` or `**Changes requested:**`. The editor says so before you post.
+- Editors: `alt+enter` submits (`ctrl+s` and `ctrl+enter` also work where your terminal passes them through; zellij takes `ctrl+s`), `esc` cancels (twice if you typed something). If a post fails, the editor stays open with your text and shows the reason.
 
 ## Agent review
 

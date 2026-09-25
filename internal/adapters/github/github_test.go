@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/TheLazyLemur/review-assist/internal/adapters/github"
@@ -51,5 +52,25 @@ func TestInlineCommentPostsAnchoredPayloadToTheRepoHost(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("payload %s: want %v, got %v", k, v, got[k])
 		}
+	}
+}
+
+func TestFailedCommandErrorLeadsWithTheReason(t *testing.T) {
+	// given
+	// ... a command that fails with a reason on stderr after long arguments
+	run := github.ExecRunner{Dir: t.TempDir()}
+	long := strings.Repeat("x", 200)
+
+	// when
+	// ... it runs
+	_, err := run.Run(context.Background(), nil, "sh", "-c", "echo 'Can not request changes on your own pull request' >&2; exit 1", long)
+
+	// then
+	// ... the error starts with the reason, so a status line cut to the terminal width still shows it
+	if err == nil || !strings.HasPrefix(err.Error(), "Can not request changes on your own pull request") {
+		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(err.Error(), long) {
+		t.Errorf("error repeats the full arguments: %v", err)
 	}
 }

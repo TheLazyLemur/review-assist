@@ -209,6 +209,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case editorDoneMsg:
+		m.busy--
+		if msg.err != nil {
+			msg.editor.posting = false
+			msg.editor.err = msg.what + " failed: " + msg.err.Error()
+			return m, nil
+		}
+		if m.modal == msg.editor {
+			m.modal = nil
+		}
+		cmds := []tea.Cmd{m.setStatus(msg.what+" ✓", false), m.loadPRs()}
+		if m.pr != nil {
+			cmds = append(cmds, m.loadPR(m.pr.number))
+		}
+		return m, tea.Batch(cmds...)
+
 	case agentEventMsg, agentDoneMsg:
 		return m, m.handleAgentMsg(msg)
 	}

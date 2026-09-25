@@ -87,6 +87,24 @@ func (s *Service) Load(ctx context.Context, number int) (*Details, error) {
 	return &d, nil
 }
 
+// ReviewFor handles a review on the viewer's own PR. Code hosts refuse
+// approve and request changes from a PR's author, but the author still
+// reviews code an agent wrote. So those become a comment review whose body
+// opens with the intended verdict. An unknown viewer changes nothing.
+func ReviewFor(author, viewer string, event ReviewEvent, body string) (ReviewEvent, string) {
+	if viewer == "" || !strings.EqualFold(author, viewer) || event == CommentReview {
+		return event, body
+	}
+	verdict := map[ReviewEvent]string{Approve: "Approved", RequestChanges: "Changes requested"}[event]
+	if verdict == "" {
+		panic(fmt.Sprintf("pr.ReviewFor: unknown review event %q", event))
+	}
+	if blank(body) {
+		return CommentReview, "**" + verdict + "**"
+	}
+	return CommentReview, "**" + verdict + ":**\n\n" + body
+}
+
 func (s *Service) SubmitReview(ctx context.Context, number int, event ReviewEvent, body string) error {
 	switch event {
 	case Approve:
