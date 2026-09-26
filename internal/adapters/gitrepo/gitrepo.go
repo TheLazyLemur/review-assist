@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
@@ -23,6 +24,9 @@ import (
 type Source struct {
 	Cwd      string
 	CacheDir string // e.g. os.UserCacheDir()/review-assist
+	// BitbucketToken is the API token git gives a mirror of a bitbucket.org
+	// repository. A clone at Cwd keeps the auth of its own remote.
+	BitbucketToken string
 }
 
 var _ review.CodeSource = Source{}
@@ -57,7 +61,7 @@ func (s Source) Open(ctx context.Context, repo pr.Repo, p *pr.PR) (review.Code, 
 		// Errors are tolerated: the review reports missing commits and the
 		// agents still work from the diff. An empty --refmap keeps the
 		// remote's refspec from moving its remote-tracking branches.
-		_, _ = r.git(ctx, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, ref)
+		_, _ = r.fetch(ctx, "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", remote, ref)
 	}
 	if repo.Platform == pr.GitHub {
 		fetch(fmt.Sprintf("refs/pull/%d/head", p.Number))
@@ -86,9 +90,18 @@ func (s Source) resolve(ctx context.Context, repo pr.Repo) (*Repo, error) {
 	if s.CacheDir == "" {
 		return nil, fmt.Errorf("gitrepo: %s is not checked out here and no cache dir is set", repo.Qualified())
 	}
-	dir := filepath.Join(s.CacheDir, repo.Qualified()+".git")
+	mirror := &Repo{dir: filepath.Join(s.CacheDir, repo.Qualified()+".git")}
+	if repo.Platform == pr.Bitbucket {
+		// Without the token git would fall back to the user's helpers and
+		// fail later with a less telling error, or succeed by accident.
+		if s.BitbucketToken == "" {
+			return nil, fmt.Errorf("gitrepo: %s is not checked out here and no Bitbucket API token is set to mirror it", repo.Qualified())
+		}
+		mirror.token = s.BitbucketToken
+	}
+	dir := mirror.dir
 	if _, err := os.Stat(filepath.Join(dir, "HEAD")); err == nil {
-		return &Repo{dir: dir}, nil
+		return mirror, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return nil, err
@@ -97,22 +110,23 @@ func (s Source) resolve(ctx context.Context, repo pr.Repo) (*Repo, error) {
 	// Clone beside the target and rename, so a cancelled clone never looks complete.
 	tmp := dir + ".partial"
 	_ = os.RemoveAll(tmp)
-	clone := exec.CommandContext(ctx, "git", "clone", "--quiet", "--bare", cloneURL(repo), tmp)
-	clone.Env = noPrompt()
-	if out, err := clone.CombinedOutput(); err != nil {
+	if out, err := gitCommand(ctx, mirror.token, "clone", "--quiet", "--bare", cloneURL(repo), tmp).CombinedOutput(); err != nil {
 		_ = os.RemoveAll(tmp)
 		return nil, fmt.Errorf("mirror %s: %s", repo.Qualified(), strings.TrimSpace(string(out)))
 	}
 	if err := os.Rename(tmp, dir); err != nil {
 		return nil, fmt.Errorf("mirror %s: %w", repo.Qualified(), err)
 	}
-	return &Repo{dir: dir}, nil
+	return mirror, nil
 }
 
 func cloneURL(repo pr.Repo) string { return repo.URL() + ".git" }
 
 // Repo is a git repository on disk.
-type Repo struct{ dir string }
+type Repo struct {
+	dir   string
+	token string // the Bitbucket API token, set only on a mirror of bitbucket.org
+}
 
 var _ review.Code = (*Repo)(nil)
 
@@ -217,9 +231,54 @@ type gitError struct {
 func (e *gitError) Error() string { return strings.TrimSpace(e.stderr + " " + e.err.Error()) }
 func (e *gitError) Unwrap() error { return e.err }
 
+// bitbucketURL scopes tokenHelper, so a redirect to another host is not
+// offered the token. Tests point it at a local server.
+var bitbucketURL = "https://bitbucket.org"
+
+// tokenHelper answers git's credential requests with Bitbucket's git
+// username for API tokens and the token in tokenEnv. It names the variable,
+// so the token stays off every command line. printf, not echo: sh's echo may
+// read backslashes in the token as escapes.
+const (
+	tokenEnv    = "REVIEW_ASSIST_GIT_TOKEN"
+	tokenHelper = `!f() { printf 'username=x-bitbucket-api-token-auth\npassword=%s\n' "$` + tokenEnv + `"; }; f`
+)
+
+// gitCommand runs git with no prompt and, given a token, with tokenHelper as
+// the only credential helper for bitbucketURL. -c lasts one invocation, so
+// nothing is written to config. The empty helper first drops the user's and
+// system's helpers for that URL, scoped or not, as the more specific key
+// resets the list: otherwise one such as osxkeychain could answer first with
+// a stale password, and git would hand the token to every helper to store.
+func gitCommand(ctx context.Context, token string, args ...string) *exec.Cmd {
+	env := noPrompt()
+	if token != "" {
+		key := "credential." + bitbucketURL + ".helper"
+		args = append([]string{"-c", key + "=", "-c", key + "=" + tokenHelper}, args...)
+		// The user's curl tracing would print the Authorization header, and
+		// stderr ends up in errors shown in the TUI.
+		env = slices.DeleteFunc(env, func(kv string) bool {
+			name, _, _ := strings.Cut(kv, "=")
+			return name == "GIT_TRACE_CURL" || name == "GIT_CURL_VERBOSE" || name == "GIT_TRACE_REDACT"
+		})
+		env = append(env, tokenEnv+"="+token)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = env
+	return cmd
+}
+
 func (r *Repo) git(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", r.dir}, args...)...)
-	cmd.Env = noPrompt()
+	return r.run(ctx, "", args...)
+}
+
+// fetch is the one command of Repo that talks to the code host.
+func (r *Repo) fetch(ctx context.Context, args ...string) ([]byte, error) {
+	return r.run(ctx, r.token, append([]string{"fetch"}, args...)...)
+}
+
+func (r *Repo) run(ctx context.Context, token string, args ...string) ([]byte, error) {
+	cmd := gitCommand(ctx, token, append([]string{"-C", r.dir}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

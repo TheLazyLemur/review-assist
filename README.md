@@ -156,11 +156,15 @@ the app Bitbucket, then these scopes:
 | `read:user:bitbucket` | who you are, to tell your own pull requests apart |
 | `read:pullrequest:bitbucket` | list pull requests, read one, its comments; post and delete comments |
 | `write:pullrequest:bitbucket` | approve, request changes, merge, decline, mark as draft or ready |
-| `read:repository:bitbucket` | the diff: Bitbucket redirects a pull request's diff to the repository's |
+| `read:repository:bitbucket` | the diff: Bitbucket redirects a pull request's diff to the repository's; the git mirror agent review reads code from |
 
 The token is shown once, so copy it into the config file or
-`REVIEW_ASSIST_BITBUCKET_API_TOKEN` straight away. Checkout and agent review
-fetch with git, over the remote's own credentials, not this token.
+`REVIEW_ASSIST_BITBUCKET_API_TOKEN` straight away. Agent review of a
+Bitbucket repository with no local clone mirrors it with git using this token;
+it is given to git only for the clone and fetches of that mirror, and never
+written to it. A
+local clone, for checkout and agent review, fetches with its remote's own
+credentials.
 
 ### Backends
 

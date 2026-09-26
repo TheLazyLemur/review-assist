@@ -111,7 +111,7 @@ func run(args []string) error {
 	prs := pr.NewService(host, repo)
 	reviews := review.NewService(
 		backend,
-		gitrepo.Source{Cwd: cwd, CacheDir: cache},
+		gitrepo.Source{Cwd: cwd, CacheDir: cache, BitbucketToken: cfg.bitbucket.apiToken},
 		cfg.maxTurns, cfg.concurrency,
 	)
 	app := tui.New(tui.Deps{
