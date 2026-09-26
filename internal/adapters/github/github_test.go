@@ -134,3 +134,19 @@ func TestPlatformsReportsAFailedGhRun(t *testing.T) {
 		t.Errorf("github.com: got %q %v %v", dotcom, dotcomOK, dotcomErr)
 	}
 }
+
+func TestGitHubRefusesAVerdictFromTheAuthor(t *testing.T) {
+	// given
+	// ... a GitHub client
+	c := github.NewClient(&recordingRunner{}, pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "o", Name: "r"})
+
+	// when
+	// ... it is asked whether it records a verdict from the author
+	accepts := c.AcceptsVerdictFromAuthor()
+
+	// then
+	// ... it does not
+	if accepts {
+		t.Error("GitHub client says it accepts a verdict from the author")
+	}
+}

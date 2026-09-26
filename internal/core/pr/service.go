@@ -16,6 +16,9 @@ type CodeHost interface {
 	Comments(ctx context.Context, number int) ([]Comment, error)
 	Viewer(ctx context.Context) (string, error)
 
+	// AcceptsVerdictFromAuthor reports whether the code host records a
+	// verdict from the pull request's author (ADR 0003).
+	AcceptsVerdictFromAuthor() bool
 	SubmitVerdict(ctx context.Context, number int, decision Decision, message string) error
 	PostComment(ctx context.Context, number int, c NewComment) error
 	Reply(ctx context.Context, number int, parent Comment, body string) error
@@ -87,9 +90,16 @@ func IsOwn(author, viewer string) bool {
 	return viewer != "" && strings.EqualFold(author, viewer)
 }
 
-// SubmitVerdict posts a verdict. On the viewer's own pull request it posts a
-// comment headed with the verdict instead: code hosts refuse a verdict from
-// the author, but the author still reviews code an agent wrote.
+// VerdictPostsAsComment reports whether SubmitVerdict posts a comment headed
+// with the verdict instead of the verdict. It does on the viewer's own pull
+// request when the code host refuses a verdict from the author: the author
+// still reviews code an agent wrote.
+func (s *Service) VerdictPostsAsComment(p *PR, viewer string) bool {
+	return !s.host.AcceptsVerdictFromAuthor() && IsOwn(p.Author, viewer)
+}
+
+// SubmitVerdict posts a verdict, or a comment headed with it when
+// VerdictPostsAsComment says so.
 func (s *Service) SubmitVerdict(ctx context.Context, p *PR, viewer string, decision Decision, message string) (postedAsComment bool, err error) {
 	var heading string
 	switch decision {
@@ -103,7 +113,7 @@ func (s *Service) SubmitVerdict(ctx context.Context, p *PR, viewer string, decis
 	default:
 		return false, fmt.Errorf("unknown decision %q", decision)
 	}
-	if !IsOwn(p.Author, viewer) {
+	if !s.VerdictPostsAsComment(p, viewer) {
 		return false, s.host.SubmitVerdict(ctx, p.Number, decision, message)
 	}
 	body := "**" + heading + "**"

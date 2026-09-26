@@ -58,9 +58,12 @@ func TestParseRefPutsBitbucketOrgOnTheBitbucketPlatform(t *testing.T) {
 // recordingHost records posts. Other CodeHost methods are not reached.
 type recordingHost struct {
 	pr.CodeHost
-	verdicts []pr.Decision
-	comments []string
+	acceptsVerdictFromAuthor bool
+	verdicts                 []pr.Decision
+	comments                 []string
 }
+
+func (h *recordingHost) AcceptsVerdictFromAuthor() bool { return h.acceptsVerdictFromAuthor }
 
 func (h *recordingHost) SubmitVerdict(_ context.Context, _ int, d pr.Decision, _ string) error {
 	h.verdicts = append(h.verdicts, d)
@@ -72,11 +75,15 @@ func (h *recordingHost) PostComment(_ context.Context, _ int, c pr.NewComment) e
 	return nil
 }
 
-func TestVerdictOnYourOwnPRPostsAsAHeadedComment(t *testing.T) {
+// anyRepo only satisfies NewService: the host, not the platform, decides
+// what a verdict on an own pull request does.
+var anyRepo = pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "o", Name: "r"}
+
+func TestVerdictOnYourOwnPRPostsAsAHeadedCommentWhenTheHostRefusesIt(t *testing.T) {
 	// given
-	// ... a PR opened by the viewer (logins differ only in case), and one opened by someone else
-	host := &recordingHost{}
-	svc := pr.NewService(host, pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "o", Name: "r"})
+	// ... a host that refuses a verdict from the author, a PR opened by the viewer (logins differ only in case), and one opened by someone else
+	host := &recordingHost{acceptsVerdictFromAuthor: false}
+	svc := pr.NewService(host, anyRepo)
 	own := &pr.PR{Summary: pr.Summary{Number: 1, Author: "TheLazyLemur"}}
 	other := &pr.PR{Summary: pr.Summary{Number: 2, Author: "someone"}}
 	ctx := context.Background()
@@ -108,5 +115,36 @@ func TestVerdictOnYourOwnPRPostsAsAHeadedComment(t *testing.T) {
 	}
 	if !slices.Equal(host.verdicts, []pr.Decision{pr.RequestChanges}) {
 		t.Errorf("verdicts: got %v", host.verdicts)
+	}
+}
+
+func TestVerdictOnYourOwnPRIsSentWhenTheHostAcceptsIt(t *testing.T) {
+	// given
+	// ... a host that accepts a verdict from the author, and a PR opened by the viewer
+	host := &recordingHost{acceptsVerdictFromAuthor: true}
+	svc := pr.NewService(host, anyRepo)
+	own := &pr.PR{Summary: pr.Summary{Number: 1, Author: "TheLazyLemur"}}
+	ctx := context.Background()
+
+	// when
+	// ... the viewer requests changes, then approves
+	var asComment [2]bool
+	var errs [2]error
+	asComment[0], errs[0] = svc.SubmitVerdict(ctx, own, "thelazylemur", pr.RequestChanges, "fix the loop")
+	asComment[1], errs[1] = svc.SubmitVerdict(ctx, own, "thelazylemur", pr.Approve, "")
+
+	// then
+	// ... both are sent to the code host as verdicts, not comments
+	if errs != [2]error{} {
+		t.Fatalf("errors: %v", errs)
+	}
+	if asComment != [2]bool{} {
+		t.Errorf("posted as comment: %v", asComment)
+	}
+	if !slices.Equal(host.verdicts, []pr.Decision{pr.RequestChanges, pr.Approve}) {
+		t.Errorf("verdicts: got %v", host.verdicts)
+	}
+	if len(host.comments) != 0 {
+		t.Errorf("comments: got %q", host.comments)
 	}
 }

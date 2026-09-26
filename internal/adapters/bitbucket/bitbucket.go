@@ -595,6 +595,10 @@ func (c *Client) Checkout(ctx context.Context, number int) error {
 	return c.git(ctx, "merge", "--ff-only", tracking)
 }
 
+// AcceptsVerdictFromAuthor is true: Bitbucket Cloud records an approval or a
+// request for changes from the author (ADR 0003).
+func (c *Client) AcceptsVerdictFromAuthor() bool { return true }
+
 func (c *Client) OpenInBrowser(_ context.Context, number int) error {
 	if c.opts.Open == nil {
 		return errors.New("no way to open a browser was given to the Bitbucket client")
