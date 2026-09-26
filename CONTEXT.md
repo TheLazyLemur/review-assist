@@ -69,8 +69,8 @@ A read-only analysis of a pull request by agents, which returns findings.
 _Avoid_: Inspection, audit, AI review
 
 **Subject**:
-What an agent review looks at: the diff of a pull request and the repository
-at its head and base commits.
+What an agent looks at: the diff of a pull request and the repository at its
+head and base commits.
 _Avoid_: Workspace, context, material
 
 **Finding**:
@@ -84,7 +84,8 @@ and what blocks it if not.
 _Avoid_: Verdict, summary, conclusion
 
 **Agent**:
-One model-driven worker in an agent review. An agent is a specialist or the
+One model-driven worker that explores the subject with tools and ends by
+calling a finish tool. In an agent review, an agent is a specialist or the
 verifier.
 _Avoid_: Bot, worker, backend
 
@@ -124,18 +125,26 @@ A read-only operation an agent may call to explore the subject.
 _Avoid_: Function, command, capability
 
 **Finish tool**:
-The one tool that ends an agent's work and records its findings.
+The one tool that ends an agent's work and records what it returns: findings,
+or a reading order.
 _Avoid_: Submit, done, return
+
+### Reading order
+
+**Reading order**:
+An order to read a pull request's changed files in, with a one-line reason for
+each file, suggested by one agent. It holds every changed file exactly once.
+_Avoid_: Sort, ranking, tour, walkthrough
 
 ### Backends
 
 **Backend**:
-What runs agents. A backend may offer an agent only the tools of its task.
+What runs agents. A backend may offer an agent only the tools of its agent run.
 _Avoid_: Agent, model, provider, runner
 
-**Task**:
+**Agent run**:
 What a backend runs for one agent: instructions, tools and a turn limit.
-_Avoid_: Job, request, assignment
+_Avoid_: Task, job, request, assignment
 
 **Turn**:
 One reply from the model to an agent.
@@ -149,7 +158,7 @@ _Avoid_: Endpoint, provider, Anthropic backend
 **CLI backend**:
 A backend that is a command-line agent, such as Claude Code, which runs its
 own agent loop. A CLI agent qualifies only if its built-in tools can be turned
-off, so the task's tools are all it can call.
+off, so the agent run's tools are all it can call.
 _Avoid_: Agent CLI, harness, wrapper
 
 **Credential**:
