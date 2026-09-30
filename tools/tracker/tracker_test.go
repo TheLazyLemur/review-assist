@@ -736,6 +736,27 @@ func TestGraphQLPagesBecomeTheModel(t *testing.T) {
 	}
 }
 
+func TestAPullRequestKeptAsAnIssueIsNotWork(t *testing.T) {
+	// given
+	// ... a closed issue labelled pull-request, the record of a PR ported from another repository
+	raw := `[{"data":{"repository":{"nameWithOwner":"me/app","issues":{"nodes":[
+	  {"number":1,"title":"PR: add a thing","body":"","state":"CLOSED","stateReason":"COMPLETED","databaseId":100,
+	   "labels":{"nodes":[{"name":"pull-request"}]},"assignees":{"nodes":[]},"parent":null,"blockedBy":{"nodes":[]}}]}}}}]`
+
+	// when
+	// ... the pages are parsed
+	m, err := parseIssues([]byte(raw))
+
+	// then
+	// ... it is left out, so validate does not ask for a slice or the unplanned label
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 0 {
+		t.Errorf("want no issues, got %v", m.Sorted())
+	}
+}
+
 // ---- dry run ---------------------------------------------------------------
 
 func TestDryRunPrintsQuotedWritesWithoutRunningThem(t *testing.T) {
