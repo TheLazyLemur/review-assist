@@ -297,7 +297,8 @@ var (
 	doneWhenRe = regexp.MustCompile(`(?s)\*\*Done when\.?\*\*(.*?)(?:\n## |\z)`)
 	boxRe      = regexp.MustCompile(`(?m)^- \[([ xX])\] (.+)$`)
 	tasksHead  = regexp.MustCompile(`(?m)^## Tasks\s*$`)
-	tasksBlock = regexp.MustCompile(`(?ms)^## Tasks\s*\n.*?(?:^## |\z)`)
+	// Must match wherever tasksHead does, including a heading that ends the body.
+	tasksBlock = regexp.MustCompile(`(?ms)^## Tasks\s*(?:\n.*?)?(?:^## |\z)`)
 	startable  = regexp.MustCompile(`(?m)^Startable now: .*$`)
 	blankRuns  = regexp.MustCompile(`\n{3,}`)
 

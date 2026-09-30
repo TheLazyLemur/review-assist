@@ -217,7 +217,6 @@ func TestStatusChangesSendTheMatchingWrite(t *testing.T) {
 		{"a note alone is a comment", task(5, "T"), []string{"--note", "Reads work."}, []string{`comment 5 "Reads work."`}},
 		{"a title and a body are one edit", task(5, "T"), []string{"--title", "New", "--body", "B."},
 			[]string{"edit 5 title=\"New\"\nB."}},
-		{"a slice closes once its tasks are closed", slice(20), []string{"--status", "done"}, []string{`close 20 "completed" ""`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -235,6 +234,23 @@ func TestStatusChangesSendTheMatchingWrite(t *testing.T) {
 				t.Errorf("calls = %q, want %q", r.calls, tc.want)
 			}
 		})
+	}
+}
+
+func TestASliceClosesOnceItsTasksAreClosed(t *testing.T) {
+	// given
+	// ... a slice whose one task is done
+	model := []*Issue{slice(20), task(21, "Reads", under(20), checked(), closed())}
+
+	// when
+	// ... the slice is marked done
+	r := runOn(model, "issue.update", "20", "--status", "done")
+
+	// then
+	// ... it closes as completed
+	mustSucceed(t, r)
+	if want := []string{`close 20 "completed" ""`}; !reflect.DeepEqual(r.calls, want) {
+		t.Errorf("calls = %q, want %q", r.calls, want)
 	}
 }
 
@@ -372,9 +388,10 @@ func TestLinksWriteADependencyOrABodyLine(t *testing.T) {
 	}{
 		{"depends-on adds a native dependency", []*Issue{task(5, "T"), task(6, "U")}, []string{"issue.link.add", "6", "depends-on", "5"}, "add_dep 6 5"},
 		{"depends-on is removed the same way", []*Issue{task(5, "T"), task(6, "U", deps(5))}, []string{"issue.link.remove", "6", "depends-on", "5"}, "remove_dep 6 5"},
-		{"relates-to appends a line", []*Issue{task(7, "A"), task(8, "B")}, []string{"issue.link.add", "7", "relates-to", "8"}, "## Notes\n\nRelated: #8\n"},
-		{"discovered-during appends its line", []*Issue{task(7, "A"), task(8, "B")}, []string{"issue.link.add", "7", "discovered-during", "8"},
-			"## Notes\n\nDiscovered during #8\n"},
+		{"relates-to appends a line", []*Issue{task(7, "A", withBody("## Notes\n")), task(8, "B")}, []string{"issue.link.add", "7", "relates-to", "8"},
+			"edit 7\n## Notes\n\nRelated: #8\n"},
+		{"discovered-during appends its line", []*Issue{task(7, "A", withBody("## Notes\n")), task(8, "B")}, []string{"issue.link.add", "7", "discovered-during", "8"},
+			"edit 7\n## Notes\n\nDiscovered during #8\n"},
 		{"removing a line leaves no gap", []*Issue{task(7, "A", withBody("## Notes\n\nRelated: #8\n\nDiscovered during #9\n")), task(8, "B")},
 			[]string{"issue.link.remove", "7", "relates-to", "8"}, "edit 7\n## Notes\n\nDiscovered during #9\n"},
 	}
@@ -388,10 +405,10 @@ func TestLinksWriteADependencyOrABodyLine(t *testing.T) {
 			r := runOn(tc.issues, tc.args...)
 
 			// then
-			// ... one write carries it
+			// ... one write carries it, to the issue named first
 			mustSucceed(t, r)
-			if len(r.calls) != 1 || !strings.HasSuffix(r.calls[0], tc.want) {
-				t.Errorf("calls = %q, want one ending %q", r.calls, tc.want)
+			if want := []string{tc.want}; !reflect.DeepEqual(r.calls, want) {
+				t.Errorf("calls = %q, want %q", r.calls, want)
 			}
 		})
 	}
@@ -436,13 +453,15 @@ func TestSyncWritesTheTaskListFrontierAndGraph(t *testing.T) {
 
 func TestSyncWritesNothingWhenInSync(t *testing.T) {
 	// given
-	// ... a slice already synced
-	m := Model{20: slice(20), 21: task(21, "Reads", under(20))}
-	m[20].Body, _ = syncedBody(m[20].Body, m.tasksSection(20))
+	// ... a slice whose body is what a first sync wrote
+	model := []*Issue{slice(20), task(21, "Reads", under(20))}
+	first := runOn(model, "slice.sync", "20")
+	mustSucceed(t, first)
+	model[0].Body = strings.TrimPrefix(first.calls[0], "edit 20\n")
 
 	// when
 	// ... it is synced again
-	r := runOn([]*Issue{m[20], m[21]}, "slice.sync", "20")
+	r := runOn(model, "slice.sync", "20")
 
 	// then
 	// ... nothing is written
@@ -451,6 +470,22 @@ func TestSyncWritesNothingWhenInSync(t *testing.T) {
 	if len(r.calls) > 0 {
 		t.Errorf("wrote %q", r.calls)
 	}
+}
+
+func TestSyncFillsATasksHeadingAtTheEndOfTheBody(t *testing.T) {
+	// given
+	// ... a slice whose body ends on the Tasks heading with no newline after it
+	model := []*Issue{{Number: 20, Title: "S", Labels: []string{labelSlice}, Body: "**Demo.** " + demo + "\n\n## Tasks"},
+		task(21, "Reads", under(20))}
+
+	// when
+	// ... the slice is synced
+	r := runOn(model, "slice.sync", "20")
+
+	// then
+	// ... the Tasks section is written after the demo
+	mustSucceed(t, r)
+	mustContain(t, r.calls[0], "edit 20\n**Demo.** "+demo+"\n\n## Tasks\n\n", "- #21\n\nStartable now: #21.")
 }
 
 func TestACleanModelValidates(t *testing.T) {
@@ -578,22 +613,34 @@ func TestReadyFlagsWeakCriteriaAThinDemoAndUnmetDeps(t *testing.T) {
 		"two things joined by 'and'", "[ok] `review-assist` lists the pull requests")
 }
 
-func TestIssueGetShowsDependenciesDependantsAndTasks(t *testing.T) {
+func TestIssueGetShowsATasksSliceAndDependants(t *testing.T) {
 	// given
 	// ... a slice with two tasks, the second depending on the first
 	model := []*Issue{slice(20), task(21, "Reads", under(20)), task(22, "Posts", under(20), deps(21))}
 
 	// when
-	// ... the first task and the slice are read
-	first := runOn(model, "issue.get", "21")
-	whole := runOn(model, "issue.get", "20")
+	// ... the first task is read
+	r := runOn(model, "issue.get", "21")
 
 	// then
-	// ... the task names its slice and what needs it, and the slice lists its tasks
-	mustSucceed(t, first)
-	mustContain(t, first.out, "#21 Reads\ntask of #20, todo", "needed by #22 (todo) Posts")
-	mustSucceed(t, whole)
-	mustContain(t, whole.out, "slice, open", "  #21  todo    Reads", "  #22  todo    Posts")
+	// ... it names its slice and what needs it
+	mustSucceed(t, r)
+	mustContain(t, r.out, "#21 Reads\ntask of #20, todo", "needed by #22 (todo) Posts")
+}
+
+func TestIssueGetShowsASlicesTasks(t *testing.T) {
+	// given
+	// ... a slice with two tasks
+	model := []*Issue{slice(20), task(21, "Reads", under(20)), task(22, "Posts", under(20), deps(21))}
+
+	// when
+	// ... the slice is read
+	r := runOn(model, "issue.get", "20")
+
+	// then
+	// ... it lists its tasks with their status
+	mustSucceed(t, r)
+	mustContain(t, r.out, "slice, open", "  #21  todo    Reads", "  #22  todo    Posts")
 }
 
 // ---- blockers in other repositories ----------------------------------------
@@ -621,18 +668,18 @@ func TestABlockerInAnotherRepositoryIsUnmetUntilItsOwnStateIsDone(t *testing.T) 
 	elsewhere := func(closed, notPlanned bool) opt {
 		return blockedBy(Dep{Repo: "acme/api", Number: 3, Closed: closed, NotPlanned: notPlanned})
 	}
-	m := Model{3: task(3, "Local three"), 5: task(5, "Open there", elsewhere(false, false)),
-		6: task(6, "Done there", elsewhere(true, false)), 7: task(7, "Dropped there", elsewhere(true, true))}
+	model := []*Issue{task(3, "Local three"), task(5, "Open there", elsewhere(false, false)),
+		task(6, "Done there", elsewhere(true, false)), task(7, "Dropped there", elsewhere(true, true))}
 
 	// when
-	// ... each task's unmet dependencies are read
-	got := map[int]int{5: len(m.unmet(m[5])), 6: len(m.unmet(m[6])), 7: len(m.unmet(m[7]))}
+	// ... the board is printed
+	r := runOn(model, "board")
 
 	// then
-	// ... the open and the dropped blockers count, the done one does not, and the local #3 plays no part
-	if want := map[int]int{5: 1, 6: 0, 7: 1}; !reflect.DeepEqual(got, want) {
-		t.Errorf("unmet counts = %v, want %v", got, want)
-	}
+	// ... the open and the dropped blockers hold their tasks back, the done one frees its task, and the local #3 plays no part
+	mustSucceed(t, r)
+	mustContain(t, r.out, "  NEXT\n    #3            Local three\n    #6            Done there\n",
+		"  BLOCKED\n    #5            Open there  waits on acme/api#3\n    #7            Dropped there  waits on acme/api#3")
 }
 
 func TestReadyReportsADependencyThatIsNotAnIssueHere(t *testing.T) {
@@ -700,15 +747,15 @@ func TestDryRunPrintsQuotedWritesWithoutRunningThem(t *testing.T) {
 	// when
 	// ... a task with shell characters in its title is created and given a dependency
 	n, err := g.Create("O'Brien's mail $(bounces)", "Body.", []string{labelUnplanned})
-	if err == nil {
-		err = g.AddDep(n, 21)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.AddDep(n, 21); err != nil {
+		t.Fatal(err)
 	}
 
 	// then
 	// ... each write is printed as a quoted gh command, and the fake number is used
-	if err != nil {
-		t.Fatal(err)
-	}
 	mustContain(t, out.String(),
 		`gh issue create --title 'O'\''Brien'\''s mail $(bounces)' --body-file - --label unplanned`+"\n  stdin: Body.",
 		"gh api --method POST repos/{owner}/{repo}/issues/901/dependencies/blocked_by -F issue_id=2100 --silent")
