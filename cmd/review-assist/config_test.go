@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/TheLazyLemur/review-assist/internal/core/review"
@@ -86,6 +87,30 @@ func TestClaudeCodeRejectsNoEffort(t *testing.T) {
 	// ... it refuses to start
 	if err == nil {
 		t.Fatal("want an error for effort none on claude-code")
+	}
+}
+
+func TestConfigFileWithASecretMustBeReadableByTheOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits")
+	}
+
+	// given
+	// ... a config file holding a token that other users can read
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"claude_code": {"token": "t"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// when
+	// ... the config is loaded
+	_, err := parseConfig(nil, func(string) string { return "" }, path)
+
+	// then
+	// ... it refuses to start and says how to fix the mode
+	want := "config " + path + " holds a secret but other users can read it (mode 0644): run chmod 600 " + path
+	if err == nil || err.Error() != want {
+		t.Errorf("want %q, got %v", want, err)
 	}
 }
 

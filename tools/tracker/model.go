@@ -13,6 +13,9 @@ const (
 	labelSlice     = "slice"
 	labelReady     = "ready"
 	labelUnplanned = "unplanned"
+	// A pull request of an earlier repository, kept as an issue so its
+	// number still resolves. It is a record, not work.
+	labelPullRequest = "pull-request"
 )
 
 var (
@@ -161,6 +164,9 @@ func parseIssues(raw []byte) (Model, error) {
 			return nil, fmt.Errorf("decode issues: the query returned no repository name")
 		}
 		for _, n := range p.Data.Repository.Issues.Nodes {
+			if slices.ContainsFunc(n.Labels.Nodes, func(l struct{ Name string }) bool { return l.Name == labelPullRequest }) {
+				continue
+			}
 			i := &Issue{
 				Number: n.Number, Title: n.Title, Body: n.Body, ID: n.DatabaseID,
 				Closed: n.State == "CLOSED", NotPlanned: n.StateReason == "NOT_PLANNED",
@@ -297,7 +303,8 @@ var (
 	doneWhenRe = regexp.MustCompile(`(?s)\*\*Done when\.?\*\*(.*?)(?:\n## |\z)`)
 	boxRe      = regexp.MustCompile(`(?m)^- \[([ xX])\] (.+)$`)
 	tasksHead  = regexp.MustCompile(`(?m)^## Tasks\s*$`)
-	tasksBlock = regexp.MustCompile(`(?ms)^## Tasks\s*\n.*?(?:^## |\z)`)
+	// Must match wherever tasksHead does, including a heading that ends the body.
+	tasksBlock = regexp.MustCompile(`(?ms)^## Tasks\s*(?:\n.*?)?(?:^## |\z)`)
 	startable  = regexp.MustCompile(`(?m)^Startable now: .*$`)
 	blankRuns  = regexp.MustCompile(`\n{3,}`)
 

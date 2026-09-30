@@ -1,6 +1,6 @@
 package review
 
-// Lenses adapted from the fanout-review skill. One lens per specialist.
+// One lens per specialist, so each agent checks one kind of problem.
 
 type LensID string
 

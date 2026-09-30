@@ -10,16 +10,6 @@ import (
 
 type remote struct{ name, hostname, path string }
 
-var urlForms = []struct {
-	name string
-	url  func(hostname, path string) string
-}{
-	{"ssh", func(h, p string) string { return "git@" + h + ":" + p + ".git" }},
-	{"https", func(h, p string) string { return "https://" + h + "/" + p + ".git" }},
-	{"ssh-scheme", func(h, p string) string { return "ssh://git@" + h + ":22/" + p + ".git" }},
-	{"https-user", func(h, p string) string { return "https://someone@" + h + "/" + p }},
-}
-
 func fakePlatforms(hostname string) (pr.Platform, bool, error) {
 	platform, ok := map[string]pr.Platform{
 		"github.com":      pr.GitHub,
@@ -101,7 +91,6 @@ func TestPickRemote(t *testing.T) {
   mirror  gitlab.com/team/app-mirror`,
 		},
 		{
-			// Every URL form parses to the alias, so the refusal is the same in each.
 			name:    "an SSH host alias is not a supported code host",
 			remotes: []remote{{"origin", "github-work", "TheLazyLemur/review-assist"}},
 			err: `no git remote points at a supported code host (GitHub, Bitbucket)
@@ -112,57 +101,64 @@ func TestPickRemote(t *testing.T) {
 			err:  "no git remote points at a supported code host (GitHub, Bitbucket)",
 		},
 		{
-			name:    "github.com is GitHub",
-			remotes: []remote{{"origin", "github.com", "TheLazyLemur/review-assist"}},
-			want:    pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "TheLazyLemur", Name: "review-assist"},
-			picked:  "origin",
-		},
-		{
-			name:    "a GitHub Enterprise hostname keeps its hostname",
-			remotes: []remote{{"origin", "ghe.example.com", "acme/widgets"}},
-			want:    pr.Repo{Platform: pr.GitHub, Hostname: "ghe.example.com", Owner: "acme", Name: "widgets"},
-			picked:  "origin",
-		},
-		{
-			name:    "bitbucket.org is Bitbucket",
-			remotes: []remote{{"origin", "bitbucket.org", "acme/storefront"}},
-			want:    pr.Repo{Platform: pr.Bitbucket, Hostname: "bitbucket.org", Owner: "acme", Name: "storefront"},
-			picked:  "origin",
-		},
-		{
-			name:    "any other hostname is not a supported code host",
+			name:    "the only remote on a code host when origin is not on one",
 			remotes: []remote{{"origin", "gitlab.com", "team/app"}, {"github", "github.com", "team/app"}},
 			want:    pr.Repo{Platform: pr.GitHub, Hostname: "github.com", Owner: "team", Name: "app"},
 			picked:  "github",
 		},
 	}
-	for _, form := range urlForms {
-		for _, tc := range cases {
-			t.Run(form.name+"/"+tc.name, func(t *testing.T) {
-				// given
-				// ... the case's remotes, with URLs in this form
-				remotes := make([]gitrepo.Remote, len(tc.remotes))
-				for i, r := range tc.remotes {
-					remotes[i] = gitrepo.Remote{Name: r.name, URL: form.url(r.hostname, r.path)}
-				}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// given
+			// ... the case's remotes, with SSH URLs
+			remotes := make([]gitrepo.Remote, len(tc.remotes))
+			for i, r := range tc.remotes {
+				remotes[i] = gitrepo.Remote{Name: r.name, URL: "git@" + r.hostname + ":" + r.path + ".git"}
+			}
 
-				// when
-				// ... the remote is picked
-				repo, picked, err := gitrepo.PickRemote(remotes, tc.tracked, fakePlatforms)
+			// when
+			// ... the remote is picked
+			repo, picked, err := gitrepo.PickRemote(remotes, tc.tracked, fakePlatforms)
 
-				// then
-				// ... the rule gives the case's repository and remote, or refuses with its message
-				if errText(err) != tc.err {
-					t.Fatalf("error: want %q, got %q", tc.err, errText(err))
-				}
-				if repo != tc.want {
-					t.Fatalf("repo: want %+v, got %+v", tc.want, repo)
-				}
-				if picked != tc.picked {
-					t.Fatalf("remote: want %q, got %q", tc.picked, picked)
-				}
-			})
-		}
+			// then
+			// ... the rule gives the case's repository and remote, or refuses with its message
+			if errText(err) != tc.err {
+				t.Fatalf("error: want %q, got %q", tc.err, errText(err))
+			}
+			if repo != tc.want {
+				t.Fatalf("repo: want %+v, got %+v", tc.want, repo)
+			}
+			if picked != tc.picked {
+				t.Fatalf("remote: want %q, got %q", tc.picked, picked)
+			}
+		})
+	}
+}
+
+func TestPickRemoteReadsTheRepositoryFromEachURLForm(t *testing.T) {
+	cases := []struct{ name, url string }{
+		{"ssh", "git@ghe.example.com:acme/widgets.git"},
+		{"https", "https://ghe.example.com/acme/widgets.git"},
+		{"ssh-scheme", "ssh://git@ghe.example.com:22/acme/widgets.git"},
+		{"https-user", "https://someone@ghe.example.com/acme/widgets"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// given
+			// ... origin on a GitHub Enterprise host, with its URL in this form
+			remotes := []gitrepo.Remote{{Name: "origin", URL: tc.url}}
+
+			// when
+			// ... the remote is picked
+			repo, _, err := gitrepo.PickRemote(remotes, "", fakePlatforms)
+
+			// then
+			// ... the hostname, owner and name come from the URL
+			want := pr.Repo{Platform: pr.GitHub, Hostname: "ghe.example.com", Owner: "acme", Name: "widgets"}
+			if err != nil || repo != want {
+				t.Fatalf("want %+v, got %+v (%v)", want, repo, err)
+			}
+		})
 	}
 }
 

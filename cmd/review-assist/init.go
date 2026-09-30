@@ -123,10 +123,12 @@ func writeExampleConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	// Private because a copy of it keeps its mode, and a copy is how a
+	// config file starts. WriteFile keeps the mode of a file that exists.
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write example config: %w", err)
 	}
-	return nil
+	return os.Chmod(path, 0o600)
 }
 
 func ptr[T any](v T) *T { return &v }

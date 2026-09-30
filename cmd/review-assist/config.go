@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 
 	"github.com/TheLazyLemur/review-assist/internal/core/review"
 )
@@ -68,6 +70,9 @@ func loadConfigFile(path string, cfg *config) error {
 	if err := dec.Decode(&fc); err != nil {
 		return fmt.Errorf("config %s: %w", path, err)
 	}
+	if err := checkPrivate(path, fc); err != nil {
+		return err
+	}
 	setIf(&cfg.backend, fc.Backend)
 	setIf(&cfg.messages.BaseURL, fc.MessagesAPI.BaseURL)
 	setIf(&cfg.messages.APIKey, fc.MessagesAPI.APIKey)
@@ -82,6 +87,26 @@ func loadConfigFile(path string, cfg *config) error {
 	setIf(&cfg.bitbucket.apiToken, fc.Bitbucket.APIToken)
 	setIf(&cfg.concurrency, fc.Review.Concurrency)
 	setIf(&cfg.maxTurns, fc.Review.MaxTurns)
+	return nil
+}
+
+// A token in the file logs in as the user, so it must not be readable by
+// other accounts. Windows has no Unix mode bits to check.
+func checkPrivate(path string, fc fileConfig) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	secrets := []*string{fc.ClaudeCode.Token, fc.MessagesAPI.APIKey, fc.Bitbucket.APIToken}
+	if !slices.ContainsFunc(secrets, func(s *string) bool { return s != nil && *s != "" }) {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("config %s: %w", path, err)
+	}
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		return fmt.Errorf("config %s holds a secret but other users can read it (mode %04o): run chmod 600 %s", path, mode, path)
+	}
 	return nil
 }
 
