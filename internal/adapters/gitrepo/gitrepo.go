@@ -146,13 +146,15 @@ func (r *Repo) ListDir(ctx context.Context, sha, path string) ([]string, error) 
 	if path != "" {
 		treeish = sha + ":" + path
 	}
-	out, err := r.git(ctx, "ls-tree", treeish)
+	// -z: without it git quotes a name with non-ASCII or special characters,
+	// and the quoted name is not one ReadFile can open.
+	out, err := r.git(ctx, "ls-tree", "-z", treeish)
 	if err != nil {
 		return nil, err
 	}
 	var names []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		meta, name, ok := strings.Cut(line, "\t")
+	for _, entry := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
+		meta, name, ok := strings.Cut(entry, "\t")
 		if !ok {
 			continue
 		}
@@ -165,7 +167,9 @@ func (r *Repo) ListDir(ctx context.Context, sha, path string) ([]string, error) 
 }
 
 func (r *Repo) Grep(ctx context.Context, sha, pattern, path string, ignoreCase bool) ([]string, error) {
-	args := []string{"grep", "-n", "-I", "-E", "--max-count", "50"}
+	// -z for the unquoted path, as in ListDir. It also ends the path and
+	// the line number with NUL, so a match reads path NUL line NUL text LF.
+	args := []string{"grep", "-z", "-n", "-I", "-E", "--max-count", "50"}
 	if ignoreCase {
 		args = append(args, "-i")
 	}
@@ -181,9 +185,13 @@ func (r *Repo) Grep(ctx context.Context, sha, pattern, path string, ignoreCase b
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for i, l := range lines {
-		lines[i] = strings.TrimPrefix(l, sha+":")
+	var lines []string
+	for rest := string(out); rest != ""; {
+		var file, n, text string
+		file, rest, _ = strings.Cut(rest, "\x00")
+		n, rest, _ = strings.Cut(rest, "\x00")
+		text, rest, _ = strings.Cut(rest, "\n")
+		lines = append(lines, strings.TrimPrefix(file, sha+":")+":"+n+":"+text)
 	}
 	return lines, nil
 }

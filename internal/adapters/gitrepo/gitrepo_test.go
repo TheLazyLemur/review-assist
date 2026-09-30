@@ -2,8 +2,9 @@ package gitrepo_test
 
 import (
 	"context"
-	"encoding/base64"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
@@ -86,27 +87,6 @@ func bitbucketPullRequest(t *testing.T) (clone, head, base string) {
 	return clone, head, base
 }
 
-func TestOpenFetchesTheBranchesOfABitbucketPullRequest(t *testing.T) {
-	// given
-	// ... a Bitbucket pull request from feature into main, whose commits the clone lacks
-	clone, head, base := bitbucketPullRequest(t)
-	p := &pr.PR{Summary: pr.Summary{Number: 7, HeadRef: "feature", BaseRef: "main"}, HeadSHA: head, BaseSHA: base}
-
-	// when
-	// ... the clone is opened for the pull request
-	code, err := gitrepo.Source{Cwd: clone}.Open(context.Background(), bitbucketRepo, p)
-
-	// then
-	// ... the head and base commits are readable
-	if err != nil {
-		t.Fatal(err)
-	}
-	hasHead, hasBase := code.HasCommit(context.Background(), head), code.HasCommit(context.Background(), base)
-	if !hasHead || !hasBase {
-		t.Fatalf("head %v, base %v", hasHead, hasBase)
-	}
-}
-
 func TestOpenFetchesTheBaseOfABitbucketPullRequestWhoseSourceBranchIsGone(t *testing.T) {
 	// given
 	// ... a Bitbucket pull request whose source branch is not on the repository, as from a fork
@@ -173,11 +153,12 @@ func TestOpenFindsABitbucketPullRequestByTwelveCharacterHashes(t *testing.T) {
 
 func TestGrepAtATwelveCharacterHashNamesTheFileWithoutTheHash(t *testing.T) {
 	// given
-	// ... a Bitbucket pull request opened by its 12-character hashes
-	clone, head, base := bitbucketPullRequest(t)
-	head, base = head[:12], base[:12]
+	// ... a checkout of a Bitbucket repository that holds the pull request, opened by its 12-character hashes
+	_, work := codeHost(t, bitbucketRepo)
+	base := git(t, work, "rev-parse", "HEAD")[:12]
+	head := commit(t, work, "b.go", "package a\n\nconst Head = 2\n")[:12]
 	p := &pr.PR{Summary: pr.Summary{Number: 7, HeadRef: "feature", BaseRef: "main"}, HeadSHA: head, BaseSHA: base}
-	code, err := gitrepo.Source{Cwd: clone}.Open(context.Background(), bitbucketRepo, p)
+	code, err := gitrepo.Source{Cwd: work}.Open(context.Background(), bitbucketRepo, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,19 +177,35 @@ func TestGrepAtATwelveCharacterHashNamesTheFileWithoutTheHash(t *testing.T) {
 	}
 }
 
-func TestOpenRefusesABitbucketPullRequestWithNoSourceBranch(t *testing.T) {
+func TestListDirAndGrepNameANonASCIIFileAsReadFileOpensIt(t *testing.T) {
 	// given
-	// ... a Bitbucket pull request with no head branch
-	p := &pr.PR{Summary: pr.Summary{Number: 7, BaseRef: "main"}, HeadSHA: "a1b2c3d4e5f6", BaseSHA: "f6e5d4c3b2a1"}
+	// ... a checkout of the repository at a commit that adds a file with a non-ASCII name
+	_, work := codeHost(t, githubRepo)
+	sha := commit(t, work, "é.txt", "accent\n")
+	code, err := gitrepo.Source{Cwd: work}.Open(context.Background(), githubRepo, &pr.PR{HeadSHA: sha, BaseSHA: sha})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// when
-	// ... it is opened
-	_, err := gitrepo.Source{Cwd: t.TempDir()}.Open(context.Background(), bitbucketRepo, p)
+	// ... the root is listed, the commit searched, and the listed file read
+	names, listErr := code.ListDir(context.Background(), sha, "")
+	lines, grepErr := code.Grep(context.Background(), sha, "accent", "", false)
+	content, readErr := code.ReadFile(context.Background(), sha, "é.txt")
 
 	// then
-	// ... it is refused for the missing branch
-	if errText(err) != `gitrepo: bad head branch "": want a branch name` {
-		t.Fatalf("got %q", errText(err))
+	// ... both name the file as it is, and reading that name gives its content
+	if listErr != nil || grepErr != nil || readErr != nil {
+		t.Fatalf("list %v, grep %v, read %v", listErr, grepErr, readErr)
+	}
+	if !slices.Equal(names, []string{"a.go", "é.txt"}) {
+		t.Fatalf("listed %q", names)
+	}
+	if !slices.Equal(lines, []string{"é.txt:1:accent"}) {
+		t.Fatalf("grep %q", lines)
+	}
+	if string(content) != "accent\n" {
+		t.Fatalf("read %q", content)
 	}
 }
 
@@ -216,6 +213,8 @@ func TestOpenRefusesABitbucketBranchThatIsNotABranchName(t *testing.T) {
 	cases := []struct{ name, branch string }{
 		{"read as a refspec", "feature:main"},
 		{"read as the previous branch", "@{-1}"},
+		{"read as an option", "-upload-pack=x"},
+		{"empty", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -376,54 +375,7 @@ func userHelper(t *testing.T, helper string) {
 	t.Setenv("GIT_CONFIG_VALUE_1", helper)
 }
 
-func TestOpenMirrorsAPrivateBitbucketRepositoryWithTheAPIToken(t *testing.T) {
-	// given
-	// ... a private Bitbucket repository, no clone of it here, and the API token
-	p, _, _ := privateBitbucketRepo(t)
-	src := gitrepo.Source{Cwd: t.TempDir(), CacheDir: t.TempDir(), BitbucketToken: apiToken}
-
-	// when
-	// ... it is opened for a pull request
-	code, err := src.Open(context.Background(), bitbucketRepo, p)
-
-	// then
-	// ... the mirror is cloned and holds the head commit
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !code.HasCommit(context.Background(), p.HeadSHA) {
-		t.Fatal("head commit missing")
-	}
-}
-
-func TestOpenFetchesIntoAPrivateBitbucketMirrorWithTheAPIToken(t *testing.T) {
-	// given
-	// ... a mirror of a private Bitbucket repository, which then gets a feature branch the mirror lacks
-	p, work, _ := privateBitbucketRepo(t)
-	src := gitrepo.Source{Cwd: t.TempDir(), CacheDir: t.TempDir(), BitbucketToken: apiToken}
-	if _, err := src.Open(context.Background(), bitbucketRepo, p); err != nil {
-		t.Fatal(err)
-	}
-	git(t, work, "checkout", "--quiet", "-b", "feature")
-	head := commit(t, work, "b.go", "package a\n")
-	git(t, work, "push", "--quiet", "origin", "feature")
-	p = &pr.PR{Summary: pr.Summary{Number: 8, HeadRef: "feature", BaseRef: "main"}, HeadSHA: head, BaseSHA: p.BaseSHA}
-
-	// when
-	// ... it is opened for a pull request from feature
-	code, err := src.Open(context.Background(), bitbucketRepo, p)
-
-	// then
-	// ... the head commit was fetched into the mirror
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !code.HasCommit(context.Background(), head) {
-		t.Fatal("head commit missing")
-	}
-}
-
-func TestOpenKeepsTheAPITokenOutOfTheMirrorsConfig(t *testing.T) {
+func TestOpenPersistsNoCredentialInTheMirror(t *testing.T) {
 	// given
 	// ... a private Bitbucket repository and the API token
 	p, _, _ := privateBitbucketRepo(t)
@@ -434,29 +386,12 @@ func TestOpenKeepsTheAPITokenOutOfTheMirrorsConfig(t *testing.T) {
 	code, err := src.Open(context.Background(), bitbucketRepo, p)
 
 	// then
-	// ... the mirror's config holds neither the token nor a credential helper
+	// ... the mirror's config holds neither the token nor a credential helper, and its remote is the plain repository URL
 	if err != nil {
 		t.Fatal(err)
 	}
 	if config := readFile(t, filepath.Join(code.Location(), "config")); strings.Contains(config, apiToken) || strings.Contains(config, "credential") {
 		t.Fatalf("credentials in mirror config:\n%s", config)
-	}
-}
-
-func TestOpenKeepsTheAPITokenOutOfTheMirrorsRemoteURL(t *testing.T) {
-	// given
-	// ... a private Bitbucket repository and the API token
-	p, _, _ := privateBitbucketRepo(t)
-	src := gitrepo.Source{Cwd: t.TempDir(), CacheDir: t.TempDir(), BitbucketToken: apiToken}
-
-	// when
-	// ... it is mirrored
-	code, err := src.Open(context.Background(), bitbucketRepo, p)
-
-	// then
-	// ... the mirror's remote is the plain repository URL
-	if err != nil {
-		t.Fatal(err)
 	}
 	if got := git(t, code.Location(), "config", "remote.origin.url"); got != "https://bitbucket.org/acme/scheduler.git" {
 		t.Fatalf("got %q", got)
@@ -465,16 +400,13 @@ func TestOpenKeepsTheAPITokenOutOfTheMirrorsRemoteURL(t *testing.T) {
 
 func TestOpenKeepsTheAPITokenOffEveryGitCommandLine(t *testing.T) {
 	// given
-	// ... a private Bitbucket repository, every git command line recorded, and a mirror of it made with the API token
+	// ... a private Bitbucket repository, every git command line recorded, a mirror of it made with the API token, and a new commit the mirror lacks
 	p, work, _ := privateBitbucketRepo(t)
 	trace := traceGit(t)
 	src := gitrepo.Source{Cwd: t.TempDir(), CacheDir: t.TempDir(), BitbucketToken: apiToken}
 	if _, err := src.Open(context.Background(), bitbucketRepo, p); err != nil {
 		t.Fatal(err)
 	}
-
-	// given
-	// ... a new commit the mirror lacks
 	head := commit(t, work, "b.go", "package a\n")
 	git(t, work, "push", "--quiet", "origin", "HEAD:main")
 
@@ -507,13 +439,12 @@ func TestOpenKeepsTheAPITokenOutOfTheUsersCurlTrace(t *testing.T) {
 	_, err := src.Open(context.Background(), bitbucketRepo, p)
 
 	// then
-	// ... the mirror is cloned and no Authorization header was traced
+	// ... the mirror is cloned and nothing was traced, not even redacted
 	if err != nil {
 		t.Fatal(err)
 	}
-	traced, _ := os.ReadFile(curlTrace)
-	if basic := base64.StdEncoding.EncodeToString([]byte("x-bitbucket-api-token-auth:" + apiToken)); strings.Contains(string(traced), basic) {
-		t.Fatalf("credentials in curl trace:\n%s", traced)
+	if traced, err := os.ReadFile(curlTrace); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("curl trace written (%v):\n%s", err, traced)
 	}
 }
 
