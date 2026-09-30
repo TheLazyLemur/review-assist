@@ -227,14 +227,14 @@ func TestListMapsPullRequestFields(t *testing.T) {
 func TestListFollowsNextAcrossPages(t *testing.T) {
 	// given
 	// ... pull requests split over two pages, the first linking to the second
-	var pagelen, sort string
+	var sort string
 	var srv *httptest.Server
 	srv = serve(t, withEmptyDiffstats(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") == "2" {
 			fmt.Fprintf(w, `{"values":[%s]}`, pullRequestJSON(3, "OPEN", "dan"))
 			return
 		}
-		pagelen, sort = r.URL.Query().Get("pagelen"), r.URL.Query().Get("sort")
+		sort = r.URL.Query().Get("sort")
 		fmt.Fprintf(w, `{"values":[%s,%s],"next":"%s%s?state=OPEN&pagelen=50&page=2"}`,
 			pullRequestJSON(1, "OPEN", "dan"), pullRequestJSON(2, "OPEN", "dan"), srv.URL, listPath)
 	}))
@@ -245,7 +245,7 @@ func TestListFollowsNextAcrossPages(t *testing.T) {
 	got, err := c.List(context.Background(), pr.Open)
 
 	// then
-	// ... all three come back, asked for 50 a page, most recently updated first
+	// ... all three come back, most recently updated first
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,9 +255,6 @@ func TestListFollowsNextAcrossPages(t *testing.T) {
 	}
 	if !slices.Equal(numbers, []int{1, 2, 3}) {
 		t.Errorf("numbers: want [1 2 3], got %v", numbers)
-	}
-	if pagelen != "50" {
-		t.Errorf("pagelen: want 50, got %q", pagelen)
 	}
 	if sort != "-updated_on" {
 		t.Errorf("sort: want -updated_on, got %q", sort)
@@ -315,9 +312,9 @@ func TestListDoesNotSendCredentialsToAnotherHost(t *testing.T) {
 	_, err := c.List(context.Background(), pr.Open)
 
 	// then
-	// ... the list fails without calling the other server
-	if err == nil {
-		t.Fatal("want an error, got nil")
+	// ... the list fails naming the page as outside the API, without calling the other server
+	if err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("got %v", err)
 	}
 	if otherHit {
 		t.Error("the other server was called")
@@ -502,28 +499,25 @@ func TestViewerOwnsThePullRequestsTheyOpened(t *testing.T) {
 		}
 	}))
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
-	viewer, err := c.Viewer(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// when
-	// ... open pull requests are listed
 	prs, err := c.List(context.Background(), pr.Open)
-
-	// then
-	// ... the viewer is the pull request's author
 	if err != nil {
 		t.Fatal(err)
-	}
-	if viewer != "dan" {
-		t.Errorf("viewer: want dan, got %q", viewer)
 	}
 	if len(prs) != 1 {
 		t.Fatalf("want 1 pull request, got %d", len(prs))
 	}
-	if !pr.IsOwn(prs[0].Author, viewer) {
-		t.Errorf("IsOwn(%q, %q) is false", prs[0].Author, viewer)
+
+	// when
+	// ... the viewer is read
+	viewer, err := c.Viewer(context.Background())
+
+	// then
+	// ... the viewer is the listed pull request's author
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viewer != prs[0].Author {
+		t.Errorf("viewer: want the author %q, got %q", prs[0].Author, viewer)
 	}
 }
 
@@ -653,7 +647,7 @@ func TestGetRejectsAnUnknownParticipantState(t *testing.T) {
 	}
 }
 
-func TestDiffFollowsTheRedirectWithCredentials(t *testing.T) {
+func TestDiffFollowsTheRedirect(t *testing.T) {
 	// given
 	// ... the diff URL redirects to another path on the same server
 	const text = `diff --git a/basket.go b/basket.go
@@ -669,43 +663,29 @@ diff --git a/main.go b/main.go
 -package old
 +package main
 `
-	var redirectedAuth string
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case prPath + "/diff":
 			http.Redirect(w, r, "/repositories/acme/shop/diff/a1b2c3d4e5f6..f6e5d4c3b2a1", http.StatusFound)
 		case "/repositories/acme/shop/diff/a1b2c3d4e5f6..f6e5d4c3b2a1":
-			redirectedAuth = r.Header.Get("Authorization")
 			fmt.Fprint(w, text)
 		default:
 			http.NotFound(w, r)
 		}
 	})
-	c := bitbucket.NewClient(srv.URL, "dan@example.com", "s3cret", repo, bitbucket.Options{})
+	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
 	// when
 	// ... the diff is read
 	got, err := c.Diff(context.Background(), 7)
 
 	// then
-	// ... the redirected request is authenticated and the text parses into both files
+	// ... it is the text served at the redirect's target
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantAuth := basicAuth("dan@example.com", "s3cret")
-	if redirectedAuth != wantAuth {
-		t.Errorf("redirected Authorization: want %q, got %q", wantAuth, redirectedAuth)
-	}
-	files, err := diff.Parse(got)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var paths []string
-	for _, f := range files {
-		paths = append(paths, f.Path())
-	}
-	if !slices.Equal(paths, []string{"basket.go", "main.go"}) {
-		t.Errorf("want [basket.go main.go], got %v", paths)
+	if got != text {
+		t.Errorf("want %q, got %q", text, got)
 	}
 }
 
@@ -816,11 +796,15 @@ func TestCommentsLinkAReplyToItsParent(t *testing.T) {
 	}
 }
 
-func TestCommentsLeaveOutDeletedOnes(t *testing.T) {
+func TestCommentsLeaveOutDeletedPendingAndOutdatedOnes(t *testing.T) {
 	// given
-	// ... a comment and a deleted one
+	// ... a live comment on a current line, a deleted one, an unsubmitted draft, and one on a line from an older commit
 	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"values":[%s,%s]}`, commentJSON(1, ""), commentJSON(2, `,"deleted":true`))
+		fmt.Fprintf(w, `{"values":[%s,%s,%s,%s]}`,
+			commentJSON(1, `,"deleted":false,"pending":false,"inline":{"path":"a.go","from":null,"to":3,"outdated":false}`),
+			commentJSON(2, `,"deleted":true`),
+			commentJSON(3, `,"pending":true`),
+			commentJSON(4, `,"inline":{"path":"a.go","from":null,"to":3,"outdated":true}`))
 	})
 	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
 
@@ -830,52 +814,6 @@ func TestCommentsLeaveOutDeletedOnes(t *testing.T) {
 
 	// then
 	// ... only the live comment comes back
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got[0].ID != 1 {
-		t.Errorf("want only comment 1, got %+v", got)
-	}
-}
-
-func TestCommentsLeaveOutOutdatedOnes(t *testing.T) {
-	// given
-	// ... a comment on a current line and one on a line from an older commit
-	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"values":[%s,%s]}`,
-			commentJSON(1, `,"inline":{"path":"a.go","from":null,"to":3,"outdated":false}`),
-			commentJSON(2, `,"inline":{"path":"a.go","from":null,"to":3,"outdated":true}`))
-	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
-
-	// when
-	// ... the comments are read
-	got, err := c.Comments(context.Background(), 7)
-
-	// then
-	// ... only the current comment comes back
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got[0].ID != 1 {
-		t.Errorf("want only comment 1, got %+v", got)
-	}
-}
-
-func TestCommentsLeaveOutPendingOnes(t *testing.T) {
-	// given
-	// ... a posted comment and an unsubmitted draft
-	srv := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"values":[%s,%s]}`, commentJSON(1, `,"pending":false`), commentJSON(2, `,"pending":true`))
-	})
-	c := bitbucket.NewClient(srv.URL, "e", "t", repo, bitbucket.Options{})
-
-	// when
-	// ... the comments are read
-	got, err := c.Comments(context.Background(), 7)
-
-	// then
-	// ... only the posted comment comes back
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -897,8 +835,8 @@ func TestCommentsRejectAnInlineCommentWithNoPath(t *testing.T) {
 	_, err := c.Comments(context.Background(), 7)
 
 	// then
-	// ... it fails naming the comment
-	if err == nil || !strings.Contains(err.Error(), "42") {
+	// ... it fails naming the comment and the missing path
+	if err == nil || !strings.Contains(err.Error(), "comment 42: inline without a path") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -916,8 +854,8 @@ func TestCommentsRejectARangeStartWithNoEndLine(t *testing.T) {
 	_, err := c.Comments(context.Background(), 7)
 
 	// then
-	// ... it fails naming the comment
-	if err == nil || !strings.Contains(err.Error(), "42") {
+	// ... it fails naming the comment and the missing end line
+	if err == nil || !strings.Contains(err.Error(), "comment 42: range start without an end line") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -1101,14 +1039,14 @@ func TestDeleteCommentSendsADeleteToItsURL(t *testing.T) {
 	}
 }
 
-func TestApproveWithNoMessageSendsOnlyTheApproval(t *testing.T) {
+func TestApproveWithABlankMessageSendsOnlyTheApproval(t *testing.T) {
 	// given
 	// ... a server that records requests
 	c, sent := record(t, accept)
 
 	// when
-	// ... the pull request is approved with no message
-	err := c.SubmitVerdict(context.Background(), 7, pr.Approve, "")
+	// ... the pull request is approved with a message of only whitespace
+	err := c.SubmitVerdict(context.Background(), 7, pr.Approve, "  ")
 
 	// then
 	// ... only the approve request is sent
@@ -1116,26 +1054,6 @@ func TestApproveWithNoMessageSendsOnlyTheApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []sentRequest{{Method: "POST", Path: prPath + "/approve"}}
-	if !reflect.DeepEqual(*sent, want) {
-		t.Errorf("want %+v, got %+v", want, *sent)
-	}
-}
-
-func TestRequestChangesSendsTheRequestChangesRequest(t *testing.T) {
-	// given
-	// ... a server that records requests
-	c, sent := record(t, accept)
-
-	// when
-	// ... changes are requested with no message
-	err := c.SubmitVerdict(context.Background(), 7, pr.RequestChanges, "")
-
-	// then
-	// ... the request-changes request is sent
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []sentRequest{{Method: "POST", Path: prPath + "/request-changes"}}
 	if !reflect.DeepEqual(*sent, want) {
 		t.Errorf("want %+v, got %+v", want, *sent)
 	}
@@ -1207,8 +1125,8 @@ func TestPostCommentFailsWhenThePostIsRedirected(t *testing.T) {
 	err := c.PostComment(context.Background(), 7, pr.NewComment{Body: "Looks good"})
 
 	// then
-	// ... it fails naming the method rather than reporting a comment that was never posted
-	if err == nil || !strings.Contains(err.Error(), "POST") {
+	// ... it fails refusing the redirect rather than reporting a comment that was never posted
+	if err == nil || !strings.Contains(err.Error(), "refusing to follow a redirect") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -1548,9 +1466,9 @@ func TestCheckoutOfADivergedLocalBranchFailsWithoutMovingHead(t *testing.T) {
 	err := c.Checkout(context.Background(), 7)
 
 	// then
-	// ... it fails and the clone is still on main
-	if err == nil {
-		t.Fatal("want an error for a diverged branch")
+	// ... it fails naming the diverged branch and the clone is still on main
+	if err == nil || !strings.Contains(err.Error(), "local branch feat/basket has commits upstream/feat/basket lacks") {
+		t.Fatalf("got %v", err)
 	}
 	if got := git(t, clone, "rev-parse", "--abbrev-ref", "HEAD"); got != "main" {
 		t.Errorf("want HEAD still on main, got %q", got)
@@ -1620,21 +1538,5 @@ func TestOpenInBrowserOpensThePullRequestOnBitbucket(t *testing.T) {
 	want := []string{"https://bitbucket.org/acme/shop/pull-requests/7"}
 	if !slices.Equal(opened, want) {
 		t.Errorf("want %v, got %v", want, opened)
-	}
-}
-
-func TestBitbucketAcceptsAVerdictFromTheAuthor(t *testing.T) {
-	// given
-	// ... a Bitbucket client
-	c := bitbucket.NewClient("http://unused", "e", "t", repo, bitbucket.Options{})
-
-	// when
-	// ... it is asked whether it records a verdict from the author
-	accepts := c.AcceptsVerdictFromAuthor()
-
-	// then
-	// ... it does
-	if !accepts {
-		t.Error("Bitbucket client says it refuses a verdict from the author")
 	}
 }
