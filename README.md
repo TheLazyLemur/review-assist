@@ -10,10 +10,31 @@ to GitHub through `gh`, so github.com and GitHub Enterprise both work with
 your existing `gh auth login`. It talks to bitbucket.org over its REST API
 with an API token (see [Bitbucket](#bitbucket)).
 
+## Install
+
+Needs Go 1.26 or later (`go.mod` asks for 1.26.2; with the default
+`GOTOOLCHAIN=auto`, an older Go fetches it).
+
+```sh
+go install github.com/TheLazyLemur/review-assist/cmd/review-assist@latest
+```
+
+It also needs:
+
+- `git`, always.
+- [`gh`](https://cli.github.com), logged in, for GitHub. review-assist also asks
+  `gh` about any remote whose host is not github.com or bitbucket.org, to tell
+  whether it is a GitHub Enterprise server.
+- For agent review, one backend: an endpoint that serves the Anthropic
+  Messages API (such as [Ollama](https://ollama.com)), or the
+  [`claude`](https://docs.anthropic.com/en/docs/claude-code) CLI with a Claude
+  subscription. Review without agents needs neither.
+
+It runs on macOS and Linux. Windows paths are handled but have not been tried.
+
 ## Run
 
 ```sh
-go install ./cmd/review-assist    # or: go build -o review-assist ./cmd/review-assist
 
 review-assist                     # PRs of the repo in the current directory
 review-assist 41                  # open PR 41 of that repo
@@ -23,6 +44,8 @@ review-assist OWNER/REPO#12       # github.com
 review-assist HOST/OWNER/REPO#12  # any host
 review-assist --init              # write a first config file that uses Claude Code
 ```
+
+`--init` must be the only argument.
 
 `--init` asks for a token from `claude setup-token` and writes a config file
 that uses the `claude-code` backend. Paste a token you already have, or press
@@ -112,6 +135,11 @@ The config file is JSON:
 `review-assist -h` prints the path it uses. A missing file is fine. An unknown
 key is an error, so a typo fails loudly instead of being ignored.
 
+Keys and tokens in the file are secrets. If the file holds one
+(`claude_code.token`, `messages_api.api_key` or `bitbucket.api_token`) and
+other users can read it, review-assist refuses to start until you run
+`chmod 600` on it.
+
 ```json
 {
   "backend": "claude-code",
@@ -132,8 +160,6 @@ key is an error, so a typo fails loudly instead of being ignored.
   "review": { "concurrency": 4, "max_turns": 40 }
 }
 ```
-
-Keys and tokens in the file are secrets: keep it private (`chmod 600`).
 
 ### Bitbucket
 
@@ -176,11 +202,14 @@ only if its built-in tools can be turned off (see
 - **`messages-api`** is an API backend. It loops over the Anthropic Messages
   API (`<base URL>/v1/messages`) with the official SDK. Ollama serves that
   API, so the default is local Ollama with no key. The model must support
-  tools. Effort defaults to `none`, which turns thinking off: with thinking on,
+  tools. The default model, `deepseek-v4.1-flash:cloud`, is an Ollama cloud
+  model: it needs `ollama signin`. For a model that runs on your machine,
+  set `messages_api.model` to one you have pulled. Effort defaults to `none`, which turns thinking off: with thinking on,
   models here spent their whole token budget thinking and each turn took
   20–40 s. Any other effort turns on adaptive thinking at that effort.
-- **`claude-code`** is a CLI backend: the `claude` CLI, through
-  [pi-claude](https://github.com/TheLazyLemur/pi-claude). Run
+- **`claude-code`** is a CLI backend: the `claude` CLI, driven through
+  [pi-claude](https://github.com/TheLazyLemur/pi-claude), a Go library that
+  runs claude and serves it custom tools. Run
   `review-assist --init`, or mint a token with `claude setup-token` and put it
   in `claude_code.token` yourself. claude runs in bare
   mode on that token, with no built-in tools, no settings files, no MCP servers
@@ -196,7 +225,7 @@ Vim style. Press `?` anywhere for the full list.
 - List: `j/k`, `gg/G`, `ctrl+d/u`, `enter` open, `/` filter, `s` open/closed/merged/all, `r` refresh, `o` browser.
 - PR: `1 2 3` or `tab` switch Overview / Diff / Agent. `a` approve, `x` request changes, `C` PR comment,
   `m` every other action (merge / squash / rebase, close, reopen, ready / draft,
-  checkout, delete my PR comment, browser), `A` agent review, `r` refresh, `q` back.
+  checkout, delete my PR comment, browser), `A` run or cancel agent review, `o` browser, `r` refresh, `q` back.
 - Diff: `j/k` lines, `]/[` files, `}/{` hunks, `h/l` scroll sideways, `c` comment on the line,
   `v` then `c` comment on a line range, `F` file comment, `R` reply to the thread on the line,
   `D` delete my comment on the line, `t` hide comments, `f` hide file list, `n/N` next agent finding.
@@ -208,20 +237,39 @@ Vim style. Press `?` anywhere for the full list.
 
 ## Agent review
 
-`A` asks for a level. The level sets how many agents run, following the
-fanout-review skill: one lens per agent, correctness on every file, then a
-verifier that dedupes, re-checks each finding against the code, ranks them and
-writes a verdict.
+`A` asks for a level. The level sets how many agents run. Each agent checks
+the change through one lens, one kind of problem:
 
-| level | specialists | verifier |
-|---|---|---|
-| 1 quick | 1 correctness pass | no |
-| 2 standard | correctness, robustness, security (+ project rules) | yes |
-| 3 thorough | correctness split over up to 3 file groups, robustness, concurrency, security, tests (+ rules) | yes |
-| 4 max | up to 10: correctness over up to 4 file groups plus the other lenses | yes |
+| lens | checks |
+|---|---|
+| L1 | correctness and logic |
+| L2 | failure and robustness |
+| L3 | concurrency and data integrity |
+| L4 | security |
+| L5 | performance |
+| L6 | API and compatibility |
+| L7 | tests |
+| L8 | maintainability |
+| L9 | the project's own rules |
 
-The rules lens (L9) is added when the repo has a `CLAUDE.md`, `AGENTS.md`,
-`CONTRIBUTING.md`, `.editorconfig` or `GEMINI.md` at its root.
+Correctness covers every file exactly once, split into file groups on larger
+levels. The other lenses each read the whole change. Above level 1, a
+verifier then dedupes the findings, re-checks each one against the code, ranks
+them and writes a verdict.
+
+| level | agents at most | correctness groups | other lenses, in priority order |
+|---|---|---|---|
+| 1 quick | 1 | 1 | none; no verifier |
+| 2 standard | 4 | 1 | L9, L2, L4 |
+| 3 thorough | 7 | up to 3 | L9, L2, L3, L4, L7 |
+| 4 max | 10 | up to 4 | L9, L2, L3, L4, L7, L6, L5, L8 |
+
+When the lenses do not fit under the cap, the last ones are dropped. So on
+level 3, a change with three or more files and a rules file gets no L7.
+
+L9 runs only when the PR's head commit has a `CLAUDE.md`, `AGENTS.md`,
+`CONTRIBUTING.md`, `.editorconfig` or `GEMINI.md` at the repo root. It needs
+the commits locally to see them (see below).
 
 Each finding shows where a comment could go (file, line, side), a short
 title, a plain explanation, and a draft comment. `enter` jumps to the line.
@@ -232,19 +280,22 @@ you press `alt+enter`. Findings also show inline in the diff as `◆`.
 
 Agents get these tools and nothing else: `list_changed_files`, `get_diff`,
 `read_file`, `list_dir`, `grep`, `git_log`, `pr_description`, and
-`submit_findings`. Each runs a fixed read-only git command (`cat-file`,
-`ls-tree`, `grep`, `log`) against the PR's head or base commit. There is no
-shell, no write tool, and no code host access. Paths are checked so they cannot
+`submit_findings`. `read_file`, `list_dir`, `grep` and `git_log` each run a
+fixed read-only git command (`cat-file`, `ls-tree`, `grep`, `log`) against the
+PR's head or base commit. The rest serve the PR data already loaded. There is
+no shell, no write tool, and no code host access. Paths are checked so they cannot
 become git options.
 
 To read the code, agents need the PR commits locally:
 
 - If the current directory is a clone of the PR's repo, the app fetches the
-  PR's commits there. On GitHub it runs `git fetch <remote> refs/pull/N/head`.
+  PR's commits there. On GitHub it runs `git fetch <remote> refs/pull/N/head`, and fetches the
+  base commit too if it is missing.
   On Bitbucket it fetches the base and source branches by name. That adds
   objects only. It does not touch branches, the index or your working tree.
-- Otherwise it keeps a bare mirror under `~/Library/Caches/review-assist/`
-  (`os.UserCacheDir`). The first review of a repo clones it, which takes a while
+- Otherwise it keeps a bare mirror under the user cache directory
+  (`~/Library/Caches/review-assist/` on macOS, `~/.cache/review-assist/` on
+  Linux). The first review of a repo clones it, which takes a while
   for a big repo.
 
 If the commits cannot be fetched, agents still get the diff, and the agent tab
@@ -259,6 +310,8 @@ connect it to the outside; `cmd/review-assist` wires them together.
 cmd/review-assist/
   main.go          entry point: calls run()
   compose.go       composition root: flags/env, builds adapters, starts the TUI
+  config.go        config file: path and keys
+  init.go          --init
 internal/core/                 domain core (imports no adapter)
   diff/            unified diff parser; maps each line to its comment anchor
   pr/              PR types, CodeHost port, Service (loads PRs, checks write rules)
@@ -270,16 +323,44 @@ internal/adapters/
   bitbucket/       outbound pr.CodeHost over the Bitbucket Cloud REST API
   messagesapi/     outbound review.Backend: loops over the Anthropic Messages API
   claudecode/      outbound review.Backend: the claude CLI in bare mode, via pi-claude
-  gitrepo/         outbound review.CodeSource/Code over git (read commands only)
+  gitrepo/         outbound review.CodeSource/Code over git; picks the remote;
+                   fetches and mirrors, but agents only get read commands
+tools/tracker/     the issue tracker used to plan this repo (see Development)
 ```
 
-The review core has no path to GitHub: `review.Service` gets a `Backend` and a
+The review core has no path to the code host: `review.Service` gets a `Backend` and a
 `CodeSource`, and neither can post. Each backend runs its own loop but may
 only call the tools the core hands it. Only the TUI calls `pr.Service` writes, and
 only after you submit or confirm.
 
 ## Not verified
 
-The write actions (approve, request changes, comments, merge, close, and so on)
-are covered by unit tests of the `gh` arguments and payloads. They were not run
-against a live PR while this was built, so try them on a PR you own first.
+These have not run against a live pull request, so try them on a PR you own
+first:
+
+- GitHub write actions. Only the payload of an inline comment has a unit test;
+  approve, request changes, merge, close, reopen, ready / draft and deleting
+  a comment have none.
+- Some Bitbucket actions. Their requests are tested against a fake server
+  only.
+
+## Development
+
+```sh
+go test ./...
+go vet ./...
+```
+
+Work is planned in this repo's GitHub Issues: a slice is a user-visible
+change, and its tasks are sub-issues that declare what they depend on.
+`./board` shows what can start. `./tracker` reads and writes that model, and
+`./tracker validate` checks it. Both are thin wrappers over `tools/tracker`,
+which talks to GitHub through `gh`. The agent skills in `.claude/skills/`
+write slices and tasks in that shape, and `docs/agents/issue-tracker.md` has
+the raw `gh` commands. Plans for finished tasks stay in `.agents/plans/`.
+
+`CONTEXT.md` is the glossary. `docs/adr/` holds the decisions.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
