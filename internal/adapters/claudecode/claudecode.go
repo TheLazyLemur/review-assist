@@ -41,25 +41,25 @@ func New(cfg Config) *Backend {
 	return &Backend{cfg: cfg}
 }
 
-func (a *Backend) Run(ctx context.Context, task review.Task) error {
-	if task.Done == nil || task.FinishTool == "" || task.MaxTurns < 1 {
-		panic(fmt.Sprintf("claudecode.Run: incomplete task %q", task.Name))
+func (a *Backend) Run(ctx context.Context, run review.AgentRun) error {
+	if run.Done == nil || run.FinishTool == "" || run.MaxTurns < 1 {
+		panic(fmt.Sprintf("claudecode.Run: incomplete agent run %q", run.Name))
 	}
-	sess, err := pi.New(ctx, a.options(task))
+	sess, err := pi.New(ctx, a.options(run))
 	if err != nil {
 		return fmt.Errorf("start claude: %w", err)
 	}
 	defer sess.Close()
 
-	turn, err := sess.Prompt(ctx, task.Prompt)
-	if err != nil || task.Done() {
+	turn, err := sess.Prompt(ctx, run.Prompt)
+	if err != nil || run.Done() {
 		return err
 	}
 	if turn.IsError {
 		return fmt.Errorf("claude: %s %v", turn.Subtype, turn.Errors)
 	}
-	turn, err = sess.Prompt(ctx, fmt.Sprintf("You must finish by calling the %s tool. Do not answer in prose.", task.FinishTool))
-	if err != nil || task.Done() {
+	turn, err = sess.Prompt(ctx, fmt.Sprintf("You must finish by calling the %s tool. Do not answer in prose.", run.FinishTool))
+	if err != nil || run.Done() {
 		return err
 	}
 	if turn.IsError {
@@ -68,10 +68,10 @@ func (a *Backend) Run(ctx context.Context, task review.Task) error {
 	return nil
 }
 
-// The task's tools must be the only tools claude can call.
-func (a *Backend) options(task review.Task) pi.Options {
-	tools := make([]pi.Tool, 0, len(task.Tools))
-	for _, t := range task.Tools {
+// The agent run's tools must be the only tools claude can call.
+func (a *Backend) options(run review.AgentRun) pi.Options {
+	tools := make([]pi.Tool, 0, len(run.Tools))
+	for _, t := range run.Tools {
 		call := t.Call
 		schema := map[string]any{"type": "object", "properties": t.Properties}
 		if len(t.Required) > 0 {
@@ -105,8 +105,8 @@ func (a *Backend) options(task review.Task) pi.Options {
 		Executable:           a.cfg.Executable,
 		Model:                a.cfg.Model,
 		Effort:               string(a.cfg.Effort),
-		MaxTurns:             task.MaxTurns,
-		SystemPrompt:         task.System,
+		MaxTurns:             run.MaxTurns,
+		SystemPrompt:         run.System,
 		NoTools:              pi.NoToolsAll,
 		CustomTools:          tools,
 		SettingSources:       []string{""},

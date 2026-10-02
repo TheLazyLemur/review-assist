@@ -11,11 +11,11 @@ import (
 	"github.com/TheLazyLemur/review-assist/internal/core/review"
 )
 
-func TestSessionIsBareWithOnlyTheTaskTools(t *testing.T) {
+func TestSessionIsBareWithOnlyTheAgentRunTools(t *testing.T) {
 	// given
-	// ... a Claude Code agent with a setup-token, and a task with a read tool and a no-argument tool
+	// ... a Claude Code agent with a setup-token, and an agent run with a read tool and a no-argument tool
 	a := New(Config{Token: "sk-ant-oat-test", Model: "sonnet", Effort: "low", WorkDir: "/tmp/empty"})
-	task := review.Task{
+	run := review.AgentRun{
 		Name: "L1", System: "be careful", Prompt: "review", MaxTurns: 12, FinishTool: "submit_findings",
 		Done: func() bool { return false },
 		Tools: []review.Tool{{
@@ -29,7 +29,7 @@ func TestSessionIsBareWithOnlyTheTaskTools(t *testing.T) {
 
 	// when
 	// ... the session options are built
-	opts := a.options(task)
+	opts := a.options(run)
 
 	// then
 	// ... claude runs bare on the token, blind to inherited Anthropic settings
@@ -39,12 +39,12 @@ func TestSessionIsBareWithOnlyTheTaskTools(t *testing.T) {
 		}
 	}
 
-	// ... with no built-in tools, settings, MCP servers or saved session: only the task's tools
+	// ... with no built-in tools, settings, MCP servers or saved session: only the agent run's tools
 	if opts.NoTools != pi.NoToolsAll || !slices.Equal(opts.SettingSources, []string{""}) || !opts.NoSessionPersistence {
 		t.Errorf("session is not locked down: %+v", opts)
 	}
 	if len(opts.CustomTools) != 2 || opts.CustomTools[0].Name != "grep" {
-		t.Fatalf("want only the task's two tools, got %+v", opts.CustomTools)
+		t.Fatalf("want only the agent run's two tools, got %+v", opts.CustomTools)
 	}
 
 	// ... each schema is valid JSON Schema: claude drops every tool if one has "required": null
@@ -53,10 +53,10 @@ func TestSessionIsBareWithOnlyTheTaskTools(t *testing.T) {
 		t.Errorf("no-argument tool schema: %s", schema)
 	}
 	if opts.SystemPrompt != "be careful" || opts.Model != "sonnet" || opts.Effort != "low" || opts.MaxTurns != 12 || opts.CWD != "/tmp/empty" {
-		t.Errorf("task settings not passed through: %+v", opts)
+		t.Errorf("agent run settings not passed through: %+v", opts)
 	}
 
-	// ... and the tool runs the task's handler with the model's input
+	// ... and the tool runs the agent run's handler with the model's input
 	res, err := opts.CustomTools[0].Execute(context.Background(), json.RawMessage(`{"pattern":"x"}`))
 	if err != nil || res.IsError || res.Text != `hit: {"pattern":"x"}` {
 		t.Errorf("tool call: %+v %v", res, err)

@@ -42,7 +42,7 @@ func message(stop string, content ...string) string {
 		`","usage":{"input_tokens":1,"output_tokens":1},"content":[` + strings.Join(content, ",") + `]}`
 }
 
-func TestAgentLoopsOverTheMessagesAPIUntilTheTaskIsDone(t *testing.T) {
+func TestAgentLoopsOverTheMessagesAPIUntilTheAgentRunIsDone(t *testing.T) {
 	// given
 	// ... a server that answers with a tool call (after a thinking block), then the finishing call
 	srv := &fakeServer{responses: []string{
@@ -54,7 +54,7 @@ func TestAgentLoopsOverTheMessagesAPIUntilTheTaskIsDone(t *testing.T) {
 	agent := messagesapi.New(messagesapi.Config{BaseURL: hs.URL, APIKey: "sk-test", Model: "fake"})
 	var gotInput string
 	done := false
-	task := review.Task{
+	run := review.AgentRun{
 		Name: "agent", System: "be careful", Prompt: "review this", MaxTurns: 10, FinishTool: "finish",
 		Done: func() bool { return done },
 		Tools: []review.Tool{
@@ -69,11 +69,11 @@ func TestAgentLoopsOverTheMessagesAPIUntilTheTaskIsDone(t *testing.T) {
 	}
 
 	// when
-	// ... the agent runs the task
-	err := agent.Run(context.Background(), task)
+	// ... the agent does the run
+	err := agent.Run(context.Background(), run)
 
 	// then
-	// ... it called the tool with the model's input and stopped once the task was done
+	// ... it called the tool with the model's input and stopped once the agent run was done
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +122,8 @@ func TestEffortTurnsOnAdaptiveThinkingAtThatEffort(t *testing.T) {
 	done := false
 
 	// when
-	// ... it runs a task
-	err := backend.Run(context.Background(), review.Task{
+	// ... it does an agent run
+	err := backend.Run(context.Background(), review.AgentRun{
 		Name: "a", Prompt: "p", MaxTurns: 4, FinishTool: "finish", Done: func() bool { return done },
 		Tools: []review.Tool{{Name: "finish", Properties: map[string]any{},
 			Call: func(context.Context, json.RawMessage) (string, error) { done = true; return "ok", nil }}},

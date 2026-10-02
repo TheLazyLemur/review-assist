@@ -24,9 +24,9 @@ type scriptedAgent struct {
 	results []string
 }
 
-func (a *scriptedAgent) Run(ctx context.Context, task review.Task) error {
+func (a *scriptedAgent) Run(ctx context.Context, run review.AgentRun) error {
 	byName := map[string]review.Tool{}
-	for _, t := range task.Tools {
+	for _, t := range run.Tools {
 		a.tools = append(a.tools, t.Name)
 		byName[t.Name] = t
 	}
@@ -36,7 +36,7 @@ func (a *scriptedAgent) Run(ctx context.Context, task review.Task) error {
 			out = "error: " + err.Error()
 		}
 		a.results = append(a.results, out)
-		if task.Done() {
+		if run.Done() {
 			return nil
 		}
 	}
@@ -71,7 +71,7 @@ func TestQuickReviewExploresWithReadToolsAndReturnsAnchoredSuggestions(t *testin
 	agent := &scriptedAgent{calls: []toolCall{
 		{Name: "get_diff", Input: json.RawMessage(`{"path":"a.go"}`)},
 		{Name: "submit_findings", Input: json.RawMessage(`{"findings":[{"path":"a.go","line":2,"side":"head","severity":"blocking","confidence":"high","title":"Division by zero","explanation":"Always panics.","suggested_comment":"This divides by zero."}]}`)},
-		{Name: "get_diff", Input: json.RawMessage(`{}`)}, // never reached: the task is done
+		{Name: "get_diff", Input: json.RawMessage(`{}`)}, // never reached: the agent run is done
 	}}
 	reviewer := review.NewService(agent, noCode{}, 5, 1)
 

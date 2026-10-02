@@ -47,13 +47,13 @@ func New(cfg Config) *Backend {
 	)}
 }
 
-func (a *Backend) Run(ctx context.Context, task review.Task) error {
-	if task.Done == nil || task.FinishTool == "" || task.MaxTurns < 4 {
-		panic(fmt.Sprintf("messagesapi.Run: incomplete task %q", task.Name))
+func (a *Backend) Run(ctx context.Context, run review.AgentRun) error {
+	if run.Done == nil || run.FinishTool == "" || run.MaxTurns < 4 {
+		panic(fmt.Sprintf("messagesapi.Run: incomplete agent run %q", run.Name))
 	}
-	tools := make([]sdk.ToolUnionParam, 0, len(task.Tools))
-	byName := make(map[string]review.Tool, len(task.Tools))
-	for _, t := range task.Tools {
+	tools := make([]sdk.ToolUnionParam, 0, len(run.Tools))
+	byName := make(map[string]review.Tool, len(run.Tools))
+	for _, t := range run.Tools {
 		byName[t.Name] = t
 		tools = append(tools, sdk.ToolUnionParam{OfTool: &sdk.ToolParam{
 			Name:        t.Name,
@@ -62,19 +62,19 @@ func (a *Backend) Run(ctx context.Context, task review.Task) error {
 		}})
 	}
 	nudge := func(text string) sdk.ContentBlockParamUnion { return sdk.NewTextBlock(text) }
-	next := []sdk.ContentBlockParamUnion{sdk.NewTextBlock(task.Prompt)}
+	next := []sdk.ContentBlockParamUnion{sdk.NewTextBlock(run.Prompt)}
 	var messages []sdk.MessageParam
 	nudged := false
 
-	for turn := 0; turn < task.MaxTurns; turn++ {
-		if turn == task.MaxTurns-3 {
-			next = append(next, nudge(fmt.Sprintf("You are nearly out of turns. Call %s now with what you have verified.", task.FinishTool)))
+	for turn := 0; turn < run.MaxTurns; turn++ {
+		if turn == run.MaxTurns-3 {
+			next = append(next, nudge(fmt.Sprintf("You are nearly out of turns. Call %s now with what you have verified.", run.FinishTool)))
 		}
 		messages = append(messages, sdk.NewUserMessage(next...))
 		params := sdk.MessageNewParams{
 			Model:     sdk.Model(a.cfg.Model),
 			MaxTokens: 8192,
-			System:    []sdk.TextBlockParam{{Text: task.System}},
+			System:    []sdk.TextBlockParam{{Text: run.System}},
 			Messages:  messages,
 			Tools:     tools,
 		}
@@ -87,7 +87,7 @@ func (a *Backend) Run(ctx context.Context, task review.Task) error {
 		}
 		start := time.Now()
 		resp, err := a.client.Messages.New(ctx, params)
-		a.log(task.Name, turn, start, resp, err)
+		a.log(run.Name, turn, start, resp, err)
 		if err != nil {
 			return fmt.Errorf("model call: %w", err)
 		}
@@ -112,7 +112,7 @@ func (a *Backend) Run(ctx context.Context, task review.Task) error {
 			}
 			next = append(next, sdk.NewToolResultBlock(tu.ID, out, false))
 		}
-		if task.Done() {
+		if run.Done() {
 			return nil
 		}
 
@@ -120,7 +120,7 @@ func (a *Backend) Run(ctx context.Context, task review.Task) error {
 			continue
 		}
 		if resp.StopReason == sdk.StopReasonMaxTokens {
-			next = []sdk.ContentBlockParamUnion{nudge(fmt.Sprintf("Your reply was cut off. Be brief and call %s.", task.FinishTool))}
+			next = []sdk.ContentBlockParamUnion{nudge(fmt.Sprintf("Your reply was cut off. Be brief and call %s.", run.FinishTool))}
 			continue
 		}
 		// The model stopped talking without a tool call. Small models do this;
@@ -129,9 +129,9 @@ func (a *Backend) Run(ctx context.Context, task review.Task) error {
 			return nil
 		}
 		nudged = true
-		next = []sdk.ContentBlockParamUnion{nudge(fmt.Sprintf("You must finish by calling the %s tool. Do not answer in prose.", task.FinishTool))}
+		next = []sdk.ContentBlockParamUnion{nudge(fmt.Sprintf("You must finish by calling the %s tool. Do not answer in prose.", run.FinishTool))}
 	}
-	return fmt.Errorf("agent used all %d turns", task.MaxTurns)
+	return fmt.Errorf("agent used all %d turns", run.MaxTurns)
 }
 
 func (a *Backend) log(agent string, turn int, start time.Time, resp *sdk.Message, err error) {
