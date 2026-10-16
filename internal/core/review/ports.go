@@ -8,15 +8,15 @@ import (
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 )
 
-// Backend runs a whole task, so a backend may loop itself (a CLI agent) or
-// be looped by its adapter (a Messages API). It must offer only task.Tools.
+// Backend runs a whole agent run, so a backend may loop itself (a CLI agent) or
+// be looped by its adapter (a Messages API). It must offer only run.Tools.
 type Backend interface {
 	// Run returns nil when the backend stops without finishing; callers
-	// check task.Done.
-	Run(ctx context.Context, task Task) error
+	// check run.Done.
+	Run(ctx context.Context, run AgentRun) error
 }
 
-type Task struct {
+type AgentRun struct {
 	Name     string
 	System   string
 	Prompt   string

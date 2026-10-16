@@ -60,7 +60,7 @@ func (r *Service) runAgent(ctx context.Context, subject *Subject, name, system, 
 		},
 	})
 
-	err := r.backend.Run(ctx, Task{
+	err := r.backend.Run(ctx, AgentRun{
 		Name: name, System: system, Prompt: prompt, Tools: tools, MaxTurns: r.maxTurns,
 		FinishTool: submitTool.Name,
 		Done: func() bool {
