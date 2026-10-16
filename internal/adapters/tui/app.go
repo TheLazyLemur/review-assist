@@ -56,6 +56,8 @@ type Model struct {
 
 	runs map[string]*agentRun // by PR key (repo#number)
 
+	quitSeq string // written to the terminal before quitting
+
 	mdWidth int
 	md      *glamour.TermRenderer
 }
@@ -279,6 +281,9 @@ func (m *Model) quit() tea.Cmd {
 			r.cancel()
 		}
 	}
+	if m.quitSeq != "" {
+		return tea.Sequence(tea.Raw(m.quitSeq), tea.Quit)
+	}
 	return tea.Quit
 }
 
@@ -347,12 +352,14 @@ func (m *Model) footerView() string {
 	var help string
 	switch m.screen {
 	case screenList:
-		help = helpLine("j/k", "move", "enter", "open", "/", "filter", "s", "state", "r", "refresh", "o", "browser", "?", "help", "q", "quit")
+		help = helpLine(listHelp...)
 	case screenPR:
-		help = m.prHelp()
+		help = helpLine(m.prHelp()...)
 	}
 	return fit(status, m.width) + "\n" + fit(" "+help, m.width)
 }
+
+var listHelp = []string{"j/k", "move", "enter", "open", "/", "filter", "s", "state", "r", "refresh", "o", "browser", "?", "help", "q", "quit"}
 
 // overlay centres a modal over the screen.
 func (m *Model) overlay(bg, fg string) string {

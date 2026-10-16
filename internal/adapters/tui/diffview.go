@@ -26,6 +26,10 @@ type diffRow struct {
 	kind rowKind
 	line diff.Line
 	text string // for hunk and note rows
+	// what a note row shows; fileLevel marks a comment on the whole file
+	comment   *pr.Comment
+	finding   *review.Finding
+	fileLevel bool
 }
 
 const sidebarWidth = 34
@@ -91,7 +95,7 @@ func (m *Model) buildRows(width int) {
 
 	if !p.hideComments {
 		for _, c := range fileLevel {
-			p.rows = append(p.rows, diffRow{kind: rowNote, text: commentNote(c, noteW, "file")})
+			p.rows = append(p.rows, diffRow{kind: rowNote, text: commentNote(c, noteW, "file"), comment: &c, fileLevel: true})
 		}
 	}
 	if f.Binary {
@@ -106,10 +110,10 @@ func (m *Model) buildRows(width int) {
 			}
 			k := anchorKey(l)
 			for _, c := range comments[k] {
-				p.rows = append(p.rows, diffRow{kind: rowNote, text: commentNote(c, noteW, "")})
+				p.rows = append(p.rows, diffRow{kind: rowNote, text: commentNote(c, noteW, ""), comment: &c})
 			}
 			for _, fd := range findings[k] {
-				p.rows = append(p.rows, diffRow{kind: rowNote, text: findingNote(fd, noteW)})
+				p.rows = append(p.rows, diffRow{kind: rowNote, text: findingNote(fd, noteW), finding: &fd})
 			}
 		}
 	}
