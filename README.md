@@ -5,6 +5,8 @@ optional AI review agents. Agents run on a Messages API endpoint (Ollama,
 Anthropic, a proxy) or on Claude Code. The agents only suggest. They cannot
 post.
 
+![review-assist reviewing a pull request with agents](docs/demo.gif)
+
 Built with bubbletea, lipgloss and glamour (the renderer glow uses). It talks
 to GitHub through `gh`, so github.com and GitHub Enterprise both work with
 your existing `gh auth login`. It talks to bitbucket.org over its REST API
