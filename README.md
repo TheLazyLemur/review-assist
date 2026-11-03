@@ -118,6 +118,7 @@ file.
 | `claude_code.executable` | | | `claude` on `PATH` |
 | `bitbucket.email` | `REVIEW_ASSIST_BITBUCKET_EMAIL` | | required for Bitbucket; your Atlassian account email |
 | `bitbucket.api_token` | `REVIEW_ASSIST_BITBUCKET_API_TOKEN` | | required for Bitbucket; an API token |
+| `typesafe.api_key` | `REVIEW_ASSIST_TYPESAFE_API_KEY` | | off; with a key, Jev judges each file for the [reading order](#reading-order) |
 | `review.concurrency` | | `-concurrency` | 4 agents at once |
 | `review.max_turns` | | `-max-turns` | 40 model turns per agent |
 
@@ -138,7 +139,8 @@ The config file is JSON:
 key is an error, so a typo fails loudly instead of being ignored.
 
 Keys and tokens in the file are secrets. If the file holds one
-(`claude_code.token`, `messages_api.api_key` or `bitbucket.api_token`) and
+(`claude_code.token`, `messages_api.api_key`, `bitbucket.api_token` or
+`typesafe.api_key`) and
 other users can read it, review-assist refuses to start until you run
 `chmod 600` on it.
 
@@ -230,12 +232,34 @@ Vim style. Press `?` anywhere for the full list.
   checkout, delete my PR comment, browser), `A` run or cancel agent review, `o` browser, `r` refresh, `q` back.
 - Diff: `j/k` lines, `]/[` files, `}/{` hunks, `h/l` scroll sideways, `c` comment on the line,
   `v` then `c` comment on a line range, `F` file comment, `R` reply to the thread on the line,
-  `D` delete my comment on the line, `t` hide comments, `f` hide file list, `n/N` next agent finding.
+  `D` delete my comment on the line, `t` hide comments, `f` hide file list, `n/N` next agent finding,
+  `O` reading order (again to switch back to path order, or to cancel one that is running).
 - Your own PR: GitHub refuses approve and request changes from a PR's author.
   On your own GitHub PR, `a` and `x` post a comment instead, headed
   `**Approved**` or `**Changes requested:**`. The editor says so before you post.
   Bitbucket accepts them, so on your own Bitbucket PR `a` and `x` send the verdict.
 - Editors: `alt+enter` submits (`ctrl+s` and `ctrl+enter` also work where your terminal passes them through; zellij takes `ctrl+s`), `esc` cancels (twice if you typed something). If a post fails, the editor stays open with your text and shows the reason.
+
+## Reading order
+
+`O` in the Diff tab orders the changed files by how much reading they need, so
+not every line of a large pull request has to be read. Each file gets a tier,
+read, skim or skip, and a one-line reason, shown above its diff. The file list
+numbers the files in that order, and `]` and `[` follow it. `O` again switches
+back to path order without asking again. The order lasts while the pull
+request is open.
+
+With `typesafe.api_key` set, [Jev](https://docs.typesafe.ai) judges each file:
+what kind of change it is, whether it is central to what the description says,
+whether it changes something callers depend on, and whether the description
+mentions it. Fixed rules turn those answers into the tier and the reason, so a
+file is never skipped on an unsettled answer. It takes seconds and one request
+per file. Each request sends the PR's title, description and that file's diff
+to TypeSafe, so set the key only for repositories whose code may go there.
+
+Without a key, one agent on the configured backend reads the pull request and
+orders the files itself. It must list every changed file once; an order that
+misses, invents or repeats a file is refused and it tries again.
 
 ## Agent review
 
@@ -317,21 +341,22 @@ cmd/review-assist/
 internal/core/                 domain core (imports no adapter)
   diff/            unified diff parser; maps each line to its comment anchor
   pr/              PR types, CodeHost port, Service (loads PRs, checks write rules)
-  review/          levels and lenses, Service, read-only tools;
-                   ports: Backend, CodeSource/Code
+  review/          levels and lenses, reading order and its tier rules,
+                   Service, read-only tools; ports: Backend, CodeSource/Code, Judge
 internal/adapters/
   tui/             inbound: bubbletea screens calling pr.Service and review.Service
   github/          outbound pr.CodeHost over the gh CLI (github.com and GHE)
   bitbucket/       outbound pr.CodeHost over the Bitbucket Cloud REST API
   messagesapi/     outbound review.Backend: loops over the Anthropic Messages API
   claudecode/      outbound review.Backend: the claude CLI in bare mode, via pi-claude
+  typesafe/        outbound review.Judge: Jev over TypeSafe's System One API
   gitrepo/         outbound review.CodeSource/Code over git; picks the remote;
                    fetches and mirrors, but agents only get read commands
 tools/tracker/     the issue tracker used to plan this repo (see Development)
 ```
 
-The review core has no path to the code host: `review.Service` gets a `Backend` and a
-`CodeSource`, and neither can post. Each backend runs its own loop but may
+The review core has no path to the code host: `review.Service` gets a `Backend`, a
+`CodeSource` and optionally a `Judge`, and none can post. Each backend runs its own loop but may
 only call the tools the core hands it. Only the TUI calls `pr.Service` writes, and
 only after you submit or confirm.
 

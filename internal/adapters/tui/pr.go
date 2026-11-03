@@ -44,6 +44,7 @@ type prModel struct {
 	anchor       int
 	hideComments bool
 	hideSidebar  bool
+	order        *readingOrder
 
 	// agent
 	findCursor  int
@@ -86,14 +87,14 @@ func (m *Model) updatePR(key string) tea.Cmd {
 			p.selecting = false
 			return nil
 		}
-		m.screen, m.pr = screenList, nil
+		m.closePR()
 		return nil
 	case "esc":
 		if p.selecting {
 			p.selecting = false
 			return nil
 		}
-		m.screen, m.pr = screenList, nil
+		m.closePR()
 		return nil
 	case "1":
 		p.tab = tabOverview
@@ -331,7 +332,7 @@ func (m *Model) prHelp() string {
 		if p.selecting {
 			return helpLine("j/k", "extend", "c", "comment on range", "esc", "cancel")
 		}
-		return helpLine(append([]string{"j/k", "line", "]/[", "file", "}/{", "hunk", "c", "comment", "v", "select", "n/N", "finding"}, common...)...)
+		return helpLine(append([]string{"j/k", "line", "]/[", "file", "}/{", "hunk", "O", "order", "c", "comment", "v", "select", "n/N", "finding"}, common...)...)
 	case tabAgent:
 		return helpLine(append([]string{"j/k", "finding", "enter", "go to line", "c", "draft comment"}, common...)...)
 	default:

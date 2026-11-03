@@ -229,6 +229,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentEventMsg, agentDoneMsg:
 		return m, m.handleAgentMsg(msg)
+
+	case readingOrderMsg:
+		return m, m.readingOrderDone(msg)
 	}
 
 	if m.modal != nil {
