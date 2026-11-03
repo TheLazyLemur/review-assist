@@ -230,8 +230,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentEventMsg, agentDoneMsg:
 		return m, m.handleAgentMsg(msg)
 
+	case readingOrderEventMsg:
+		msg.order.progress = msg.detail
+		return m, waitAgent(msg.order.ch)
+
 	case readingOrderMsg:
-		return m, m.readingOrderDone(msg)
+		return m, tea.Batch(m.readingOrderDone(msg), waitAgent(msg.order.ch))
 	}
 
 	if m.modal != nil {
@@ -333,6 +337,9 @@ func (m *Model) headerView() string {
 	}
 	if n := m.runningAgents(); n > 0 {
 		right += lipgloss.NewStyle().Foreground(orange).Render(fmt.Sprintf("agents running: %d ", n))
+	}
+	if s := m.orderRunning(); s != "" {
+		right += lipgloss.NewStyle().Foreground(orange).Render("reading order " + s + " ")
 	}
 	gap := m.width - lipgloss.Width(repo) - lipgloss.Width(right)
 	return repo + strings.Repeat(" ", max(gap, 1)) + right

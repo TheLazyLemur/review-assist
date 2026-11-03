@@ -9,9 +9,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/TheLazyLemur/review-assist/internal/core/diff"
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 )
 
@@ -41,27 +43,32 @@ type ReadingOrder struct {
 
 // ReadingOrder suggests an order to read the PR's changed files in. With a
 // judge, Jev answers questions about each file and the rules below order
-// them. Without one, an agent orders them.
-func (r *Service) ReadingOrder(ctx context.Context, repo pr.Repo, d *pr.Details) (ReadingOrder, error) {
+// them. Without one, an agent orders them. emit gets an EventTool per file
+// judged or tool called, so a caller can show progress.
+func (r *Service) ReadingOrder(ctx context.Context, repo pr.Repo, d *pr.Details, emit func(Event)) (ReadingOrder, error) {
 	if len(d.Files) == 0 {
 		return ReadingOrder{}, errors.New("nothing to order: the PR has no changed files")
 	}
 	if r.judge != nil {
-		return r.judgedOrder(ctx, d)
+		return r.judgedOrder(ctx, d, emit)
 	}
 	code, err := r.code.Open(ctx, repo, d.PR)
 	if err != nil {
 		return ReadingOrder{}, err
 	}
-	return r.agentOrder(ctx, newSubject(ctx, code, d))
+	return r.agentOrder(ctx, newSubject(ctx, code, d), emit)
 }
+
+const orderAgent = "Reading order"
 
 // judgeConcurrency bounds requests to the judge; each is one file.
 const judgeConcurrency = 8
 
-func (r *Service) judgedOrder(ctx context.Context, d *pr.Details) (ReadingOrder, error) {
+func (r *Service) judgedOrder(ctx context.Context, d *pr.Details, emit func(Event)) (ReadingOrder, error) {
 	steps := make([]ReadingStep, len(d.Files))
 	central := make([]float64, len(d.Files))
+	toJudge := len(d.Files) - countBinary(d.Files)
+	var judged atomic.Int32
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(judgeConcurrency)
 	for i, f := range d.Files {
@@ -76,6 +83,7 @@ func (r *Service) judgedOrder(ctx context.Context, d *pr.Details) (ReadingOrder,
 				return fmt.Errorf("judge %s: %w", f.Path(), err)
 			}
 			steps[i], central[i] = stepFor(f.Path(), j), j.Central
+			emit(Event{Agent: orderAgent, Kind: EventTool, Detail: fmt.Sprintf("judged %d/%d files", judged.Add(1), toJudge)})
 			return nil
 		})
 	}
@@ -94,6 +102,16 @@ func (r *Service) judgedOrder(ctx context.Context, d *pr.Details) (ReadingOrder,
 		out.Steps[i] = steps[k]
 	}
 	return out, nil
+}
+
+func countBinary(files []diff.File) int {
+	n := 0
+	for _, f := range files {
+		if f.Binary {
+			n++
+		}
+	}
+	return n
 }
 
 // A probability at or above yes reads as true, at or below no as false; the
@@ -178,13 +196,13 @@ Start with pr_description and list_changed_files, then get_diff for the files yo
 
 Finish by calling submit_reading_order with every changed file exactly once. Never answer in prose.`
 
-func (r *Service) agentOrder(ctx context.Context, subject *Subject) (ReadingOrder, error) {
-	const name = "Reading order"
+func (r *Service) agentOrder(ctx context.Context, subject *Subject, emit func(Event)) (ReadingOrder, error) {
+	const name = orderAgent
 	var (
 		mu   sync.Mutex
 		done []ReadingStep
 	)
-	tools := append(subject.readTools(name, func(Event) {}), Tool{
+	tools := append(subject.readTools(name, emit), Tool{
 		Name: orderTool.Name, Description: orderTool.Description, Properties: orderTool.Properties, Required: orderTool.Required,
 		Call: func(_ context.Context, input json.RawMessage) (string, error) {
 			var in struct {

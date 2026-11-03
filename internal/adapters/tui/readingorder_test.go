@@ -18,20 +18,21 @@ import (
 
 // tableJudge judges each file from a table; block makes it wait for cancellation.
 type tableJudge struct {
-	mu      sync.Mutex
-	answers map[string]review.FileJudgement
-	fail    error
-	block   bool
-	asked   int
-	stopped chan struct{} // closed when a blocked judgement is cancelled
-	once    sync.Once
+	mu          sync.Mutex
+	answers     map[string]review.FileJudgement
+	fail        error
+	block       bool
+	asked       int
+	answerFirst string        // with block, this file is answered and the rest wait
+	stopped     chan struct{} // closed when a blocked judgement is cancelled
+	once        sync.Once
 }
 
 func (j *tableJudge) JudgeFile(ctx context.Context, _, _ string, f diff.File) (review.FileJudgement, error) {
 	j.mu.Lock()
 	j.asked++
 	j.mu.Unlock()
-	if j.block {
+	if j.block && f.Path() != j.answerFirst {
 		<-ctx.Done()
 		j.once.Do(func() { close(j.stopped) })
 		return review.FileJudgement{}, ctx.Err()
@@ -168,6 +169,54 @@ func TestOWhileTheReadingOrderRunsCancelsIt(t *testing.T) {
 	}
 	if got := sidebarFiles(m); got != "a.go | b.go | c.go" {
 		t.Errorf("sidebar: %q", got)
+	}
+}
+
+func TestARunningReadingOrderShowsItsProgressUntilItEnds(t *testing.T) {
+	// given
+	// ... Jev has judged a.go and is still judging the other two
+	judge := &tableJudge{block: true, answerFirst: "a.go", stopped: make(chan struct{}),
+		answers: map[string]review.FileJudgement{"a.go": {Kind: review.KindTest}}}
+	m := diffTabWith(judge)
+	press(m, "O")
+	t.Cleanup(func() { press(m, "O") }) // cancel the judgements still waiting
+
+	// when
+	// ... the status line has cleared
+	update(m, clearStatusMsg{at: m.statusAt})
+
+	// then
+	// ... the file list header and the app header still say it is ordering, with its progress
+	if m.status != "" {
+		t.Errorf("status not cleared: %q", m.status)
+	}
+	if head := ansi.Strip(m.sidebar(20)); !strings.Contains(head, "judged 1/3 files") {
+		t.Errorf("file list header: %q", strings.SplitN(head, "\n", 2)[0])
+	}
+	if head := ansi.Strip(m.headerView()); !strings.Contains(head, "reading order") {
+		t.Errorf("app header: %q", head)
+	}
+}
+
+func TestAReadingOrderThatArrivesOffTheDiffTabMarksTheTab(t *testing.T) {
+	// given
+	// ... a reading order asked for, and the user gone to the Overview tab before it arrives
+	m := diffTabWith(cOrder())
+	m.pr.tab = tabOverview
+
+	// when
+	// ... the order arrives
+	run(m, m.readingOrderKey())
+
+	// then
+	// ... the Diff tab is marked until the user opens it
+	if tabs := ansi.Strip(m.prView(120, 30)); !strings.Contains(tabs, "2 Diff ●") {
+		t.Errorf("Diff tab not marked: %q", strings.SplitN(tabs, "\n", 2)[0])
+	}
+	press(m, "2")
+	m.prView(120, 30)
+	if tabs := ansi.Strip(m.prView(120, 30)); strings.Contains(tabs, "2 Diff ●") {
+		t.Errorf("Diff tab still marked after opening it: %q", strings.SplitN(tabs, "\n", 2)[0])
 	}
 }
 

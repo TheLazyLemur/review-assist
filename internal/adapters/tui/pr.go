@@ -289,7 +289,13 @@ func (m *Model) deletePRCommentMenu(mine []pr.Comment) *menuModal {
 func (m *Model) prView(w, h int) string {
 	p := m.pr
 	var tabs []string
+	if p.tab == tabDiff && p.order != nil {
+		p.order.unseen = false
+	}
 	for i, name := range tabNames {
+		if i == tabDiff {
+			name += m.orderBadge()
+		}
 		if i == tabAgent {
 			if r := m.agentRunFor(p.number); r != nil {
 				name += " " + r.badge()

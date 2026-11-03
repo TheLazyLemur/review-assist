@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -15,13 +16,22 @@ import (
 
 // readingOrder lives on the open PR and goes when it closes.
 type readingOrder struct {
-	cancel  context.CancelFunc
-	running bool
-	steps   []review.ReadingStep
-	shown   bool
+	cancel   context.CancelFunc
+	ch       chan tea.Msg
+	started  time.Time
+	running  bool
+	progress string // the last file judged or tool called
+	steps    []review.ReadingStep
+	shown    bool
+	unseen   bool // arrived while another tab was open
 }
 
-// The message carries its order, so a cancelled or replaced order is ignored.
+// The messages carry their order, so a cancelled or replaced order is ignored.
+type readingOrderEventMsg struct {
+	order  *readingOrder
+	detail string
+}
+
 type readingOrderMsg struct {
 	order *readingOrder
 	res   review.ReadingOrder
@@ -46,14 +56,55 @@ func (m *Model) readingOrderKey() tea.Cmd {
 		return m.setStatus("path order (O for the reading order)", false)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	o := &readingOrder{cancel: cancel, running: true}
+	o := &readingOrder{cancel: cancel, ch: make(chan tea.Msg, 64), started: time.Now(), running: true}
 	p.order = o
 	reviews, repo, details := m.deps.Reviews, m.deps.PRs.Repo(), p.data
-	return tea.Batch(m.setStatus("reading order running… (O cancels)", false), func() tea.Msg {
+	go func() {
+		defer close(o.ch)
 		defer cancel()
-		res, err := reviews.ReadingOrder(ctx, repo, details)
-		return readingOrderMsg{o, res, err}
-	})
+		emit := func(ev review.Event) {
+			if ev.Kind != review.EventTool {
+				return
+			}
+			// Progress may drop when the screen lags behind; the result never does.
+			select {
+			case o.ch <- readingOrderEventMsg{o, ev.Detail}:
+			default:
+			}
+		}
+		res, err := reviews.ReadingOrder(ctx, repo, details, emit)
+		o.ch <- readingOrderMsg{o, res, err}
+	}()
+	return tea.Batch(waitAgent(o.ch), m.setStatus("reading order running… (O cancels)", false))
+}
+
+// orderBadge marks the Diff tab while an order runs, and once it arrives
+// until the tab is opened.
+func (m *Model) orderBadge() string {
+	switch o := m.pr.order; {
+	case o == nil:
+		return ""
+	case o.running:
+		return " " + m.spinner.View()
+	case o.unseen:
+		return " " + lipgloss.NewStyle().Foreground(purple).Render("●")
+	}
+	return ""
+}
+
+// orderRunning says how long the open PR's reading order has run, and what
+// it did last; empty when none runs.
+func (m *Model) orderRunning() string {
+	if m.pr == nil || m.pr.order == nil || !m.pr.order.running {
+		return ""
+	}
+	o := m.pr.order
+	d := time.Since(o.started).Round(time.Second)
+	s := fmt.Sprintf("%d:%02d", int(d.Minutes()), int(d.Seconds())%60)
+	if o.progress != "" {
+		s += " · " + o.progress
+	}
+	return s
 }
 
 // closePR leaves the PR screen; a running reading order dies with the PR.
@@ -75,6 +126,7 @@ func (m *Model) readingOrderDone(msg readingOrderMsg) tea.Cmd {
 	}
 	o := msg.order
 	o.running, o.steps, o.shown = false, msg.res.Steps, true
+	o.unseen = p.tab != tabDiff
 	if idx := p.fileOrder(); len(idx) > 0 {
 		p.selectFile(idx[0])
 	}

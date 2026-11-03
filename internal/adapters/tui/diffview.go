@@ -559,7 +559,11 @@ func (m *Model) sidebar(h int) string {
 	p := m.pr
 	w := sidebarWidth - 1
 	var lines []string
-	lines = append(lines, faintStyle.Render(fit(fmt.Sprintf(" Files (%d)", len(p.data.Files)), w)))
+	if s := m.orderRunning(); s != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(orange).Render(fit(" "+m.spinner.View()+s, w)))
+	} else {
+		lines = append(lines, faintStyle.Render(fit(fmt.Sprintf(" Files (%d)", len(p.data.Files)), w)))
+	}
 	findingCount := map[string]int{}
 	if r := m.agentRunFor(p.number); r != nil && r.result != nil {
 		for _, f := range r.result.Findings {

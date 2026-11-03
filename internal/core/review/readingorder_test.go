@@ -69,7 +69,7 @@ func TestJudgedReadingOrderPutsWhatNeedsReadingFirst(t *testing.T) {
 
 	// when
 	// ... a reading order is asked for
-	order, err := reviewer.ReadingOrder(context.Background(), anyRepo, detailsOf(files))
+	order, err := reviewer.ReadingOrder(context.Background(), anyRepo, detailsOf(files), func(review.Event) {})
 
 	// then
 	// ... files to read come first, the central one before the other, then the test to skim, then what to skip
@@ -109,7 +109,7 @@ func TestJudgedReadingOrderFailsWhenAFileCannotBeJudged(t *testing.T) {
 
 	// when
 	// ... a reading order is asked for
-	_, err := reviewer.ReadingOrder(context.Background(), anyRepo, detailsOf(changed("a.go", "b.go")))
+	_, err := reviewer.ReadingOrder(context.Background(), anyRepo, detailsOf(changed("a.go", "b.go")), func(review.Event) {})
 
 	// then
 	// ... it fails, naming the file and the cause, rather than ordering with a missing answer
@@ -139,7 +139,7 @@ func TestAgentReadingOrderWithoutJevHoldsEveryChangedFileOnce(t *testing.T) {
 
 	// when
 	// ... a reading order is asked for
-	order, err := reviewer.ReadingOrder(context.Background(), anyRepo, detailsOf(changed("a.go", "b.go")))
+	order, err := reviewer.ReadingOrder(context.Background(), anyRepo, detailsOf(changed("a.go", "b.go")), func(review.Event) {})
 
 	// then
 	// ... the agent's order comes back with its tiers and reasons
@@ -178,7 +178,7 @@ func TestAgentReadingOrderRefusesAnOrderThatMissesInventsOrRepeatsAFile(t *testi
 
 	// when
 	// ... a reading order is asked for
-	order, err := reviewer.ReadingOrder(context.Background(), anyRepo, detailsOf(changed("a.go", "b.go")))
+	order, err := reviewer.ReadingOrder(context.Background(), anyRepo, detailsOf(changed("a.go", "b.go")), func(review.Event) {})
 
 	// then
 	// ... each bad order was refused with the file it got wrong
@@ -208,7 +208,7 @@ func TestAgentReadingOrderFailsWithoutAValidOrder(t *testing.T) {
 
 	// when
 	// ... a reading order is asked for
-	_, err := reviewer.ReadingOrder(context.Background(), anyRepo, detailsOf(changed("a.go", "b.go")))
+	_, err := reviewer.ReadingOrder(context.Background(), anyRepo, detailsOf(changed("a.go", "b.go")), func(review.Event) {})
 
 	// then
 	// ... the run fails rather than returning a partial order
