@@ -21,15 +21,17 @@ func TestSettingsApplyFileThenEnvThenFlags(t *testing.T) {
 		"claude_code": {"token": "file-token", "model": "file-model", "effort": "low"},
 		"messages_api": {"base_url": "http://file:1", "api_key": "file-key", "effort": "medium"},
 		"bitbucket": {"email": "file@example.com", "api_token": "file-bb-token"},
+		"typesafe": {"api_key": "file-ts-key"},
 		"review": {"concurrency": 2}}`
 	if err := os.WriteFile(path, []byte(file), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// ... env overriding the model, base URL and Bitbucket API token, plus a generic key that must not beat the file
+	// ... env overriding the model, base URL, Bitbucket API token and TypeSafe key, plus a generic key that must not beat the file
 	env := map[string]string{
 		"REVIEW_ASSIST_MODEL":               "env-model",
 		"REVIEW_ASSIST_BASE_URL":            "http://env:2",
 		"REVIEW_ASSIST_BITBUCKET_API_TOKEN": "env-bb-token",
+		"REVIEW_ASSIST_TYPESAFE_API_KEY":    "env-ts-key",
 		"ANTHROPIC_API_KEY":                 "generic-key",
 	}
 
@@ -51,6 +53,7 @@ func TestSettingsApplyFileThenEnvThenFlags(t *testing.T) {
 	assertEqual(t, review.EffortMedium, cfg.messages.Effort)
 	assertEqual(t, "file@example.com", cfg.bitbucket.email)
 	assertEqual(t, "env-bb-token", cfg.bitbucket.apiToken)
+	assertEqual(t, "env-ts-key", cfg.typesafeKey)
 	assertEqual(t, 2, cfg.concurrency)
 	assertEqual(t, 40, cfg.maxTurns)
 }

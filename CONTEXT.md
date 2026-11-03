@@ -132,9 +132,21 @@ _Avoid_: Submit, done, return
 ### Reading order
 
 **Reading order**:
-An order to read a pull request's changed files in, with a one-line reason for
-each file, suggested by one agent. It holds every changed file exactly once.
+An order to read a pull request's changed files in, each with a tier and a
+one-line reason. It holds every changed file exactly once. The judge suggests
+it when one is configured; otherwise one agent does.
 _Avoid_: Sort, ranking, tour, walkthrough
+
+**Tier**:
+How much reading a changed file needs: read, skim or skip. A reading order
+lists the read files first, then skim, then skip.
+_Avoid_: Priority, level, importance
+
+**Judge**:
+What answers typed questions about one changed file, each with a probability:
+Jev, from TypeSafe. The judge only answers; fixed rules in code turn its
+answers into a tier and a reason.
+_Avoid_: Classifier, scorer, model
 
 ### Backends
 

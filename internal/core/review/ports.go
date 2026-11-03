@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"slices"
 
+	"github.com/TheLazyLemur/review-assist/internal/core/diff"
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 )
 
@@ -34,6 +35,36 @@ type Tool struct {
 	Required    []string
 	// An error from Call goes back to the model as a failed call.
 	Call func(ctx context.Context, input json.RawMessage) (string, error)
+}
+
+// Judge answers typed questions about one changed file, each with a
+// probability. It judges; the rules in readingorder.go decide what follows.
+type Judge interface {
+	JudgeFile(ctx context.Context, title, description string, f diff.File) (FileJudgement, error)
+}
+
+// ChangeKind is what a file's diff does.
+type ChangeKind string
+
+const (
+	KindBehaviour  ChangeKind = "behaviour_change"
+	KindRefactor   ChangeKind = "refactor"
+	KindTest       ChangeKind = "test"
+	KindConfig     ChangeKind = "config"
+	KindDocs       ChangeKind = "docs"
+	KindFormatting ChangeKind = "formatting"
+	KindGenerated  ChangeKind = "generated"
+)
+
+var ChangeKinds = []ChangeKind{KindBehaviour, KindRefactor, KindTest, KindConfig, KindDocs, KindFormatting, KindGenerated}
+
+// FileJudgement is a judge's answers about one changed file. The numbers are
+// the probability that each statement is true.
+type FileJudgement struct {
+	Kind      ChangeKind
+	Central   float64 // the file is central to what the description says the PR does
+	Contract  float64 // the diff changes something callers depend on: an API, a schema, a contract
+	Described float64 // the change is mentioned or implied by the description
 }
 
 type CodeSource interface {

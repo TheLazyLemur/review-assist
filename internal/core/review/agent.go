@@ -33,17 +33,7 @@ func (r *Service) runAgent(ctx context.Context, subject *Subject, name, system, 
 		sub       submission
 		submitted bool
 	)
-	tools := make([]Tool, 0, len(readTools)+1)
-	for _, spec := range readTools {
-		tools = append(tools, Tool{
-			Name: spec.Name, Description: spec.Description, Properties: spec.Properties, Required: spec.Required,
-			Call: func(ctx context.Context, input json.RawMessage) (string, error) {
-				emit(Event{Agent: name, Kind: EventTool, Detail: toolSummary(spec.Name, input)})
-				return subject.exec(ctx, spec.Name, input)
-			},
-		})
-	}
-	tools = append(tools, Tool{
+	tools := append(subject.readTools(name, emit), Tool{
 		Name: submitTool.Name, Description: submitTool.Description, Properties: submitTool.Properties, Required: submitTool.Required,
 		Call: func(_ context.Context, input json.RawMessage) (string, error) {
 			var s submission
@@ -80,6 +70,21 @@ func (r *Service) runAgent(ctx context.Context, subject *Subject, name, system, 
 		return submission{}, err
 	}
 	return submission{}, errNoSubmission
+}
+
+// readTools are the read tools over subject, reporting each call as an event.
+func (w *Subject) readTools(agent string, emit func(Event)) []Tool {
+	tools := make([]Tool, 0, len(readTools)+1)
+	for _, spec := range readTools {
+		tools = append(tools, Tool{
+			Name: spec.Name, Description: spec.Description, Properties: spec.Properties, Required: spec.Required,
+			Call: func(ctx context.Context, input json.RawMessage) (string, error) {
+				emit(Event{Agent: agent, Kind: EventTool, Detail: toolSummary(spec.Name, input)})
+				return w.exec(ctx, spec.Name, input)
+			},
+		})
+	}
+	return tools
 }
 
 func toolSummary(name string, input json.RawMessage) string {
