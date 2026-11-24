@@ -41,6 +41,7 @@ type config struct {
 	bitbucket   bitbucketConfig
 	maxTurns    int
 	concurrency int
+	kitty       bool   // draw with the kitty graphics protocol
 	target      string // optional PR argument
 	file        string // the config file's path, for messages
 }
@@ -114,7 +115,7 @@ func run(args []string) error {
 		gitrepo.Source{Cwd: cwd, CacheDir: cache, BitbucketToken: cfg.bitbucket.apiToken},
 		cfg.maxTurns, cfg.concurrency,
 	)
-	app := tui.New(tui.Deps{
+	deps := tui.Deps{
 		PRs:       prs,
 		Reviews:   reviews,
 		ModelName: modelName,
@@ -122,7 +123,13 @@ func run(args []string) error {
 		Remote:    remote,
 		OpenPR:    openPR,
 		Dark:      lipgloss.HasDarkBackground(os.Stdin, os.Stdout),
-	})
+	}
+	var app tea.Model = tui.New(deps)
+	if cfg.kitty {
+		if app, err = tui.NewKitty(deps, os.Stdout); err != nil {
+			return err
+		}
+	}
 	_, err = tea.NewProgram(app).Run()
 	return err
 }
@@ -211,6 +218,7 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 	apiKey := fs.String("api-key", "", "messages-api: API key sent as x-api-key (env REVIEW_ASSIST_API_KEY)")
 	fs.StringVar(&cfg.messages.LogPath, "log", cfg.messages.LogPath, "messages-api: append one line per model call to this file (env REVIEW_ASSIST_LOG)")
 	fs.IntVar(&cfg.concurrency, "concurrency", cfg.concurrency, "max agents running at once")
+	fs.BoolVar(&cfg.kitty, "kitty", false, "prototype: draw the whole UI as pixels with the kitty graphics protocol")
 	fs.IntVar(&cfg.maxTurns, "max-turns", cfg.maxTurns, "max model turns per agent (min 4)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: review-assist [flags] [PR]

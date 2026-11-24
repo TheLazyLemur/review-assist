@@ -210,7 +210,12 @@ func (mm *menuModal) view(m *Model, maxW, maxH int) string {
 
 // ---- help ----
 
-type helpModal struct{ text string }
+const helpFootnote = "Agents are read-only: they only suggest. Nothing is posted unless you submit it."
+
+type helpModal struct {
+	text     string
+	sections [][]string // a title, then key/description pairs
+}
 
 func newHelp(s screen, p *prModel) *helpModal {
 	sections := [][]string{
@@ -238,7 +243,7 @@ func newHelp(s screen, p *prModel) *helpModal {
 	}
 	half := (len(sections) + 1) / 2
 	cols := lipgloss.JoinHorizontal(lipgloss.Top, render(sections[:half]), "    ", render(sections[half:]))
-	return &helpModal{text: cols + "\n" + faintStyle.Render("Agents are read-only: they only suggest. Nothing is posted unless you submit it.")}
+	return &helpModal{text: cols + "\n" + faintStyle.Render(helpFootnote), sections: sections}
 }
 
 func (h *helpModal) update(m *Model, msg tea.Msg) tea.Cmd {

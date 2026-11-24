@@ -323,19 +323,20 @@ func (m *Model) prView(w, h int) string {
 	return head + "\n\n" + body
 }
 
-func (m *Model) prHelp() string {
+// prHelp is the footer's key/label pairs for the open tab.
+func (m *Model) prHelp() []string {
 	p := m.pr
 	common := []string{"1/2/3", "tabs", "a", "approve", "x", "req changes", "C", "comment", "m", "actions", "A", "agent", "?", "help", "q", "back"}
 	switch p.tab {
 	case tabDiff:
 		if p.selecting {
-			return helpLine("j/k", "extend", "c", "comment on range", "esc", "cancel")
+			return []string{"j/k", "extend", "c", "comment on range", "esc", "cancel"}
 		}
-		return helpLine(append([]string{"j/k", "line", "]/[", "file", "}/{", "hunk", "c", "comment", "v", "select", "n/N", "finding"}, common...)...)
+		return append([]string{"j/k", "line", "]/[", "file", "}/{", "hunk", "c", "comment", "v", "select", "n/N", "finding"}, common...)
 	case tabAgent:
-		return helpLine(append([]string{"j/k", "finding", "enter", "go to line", "c", "draft comment"}, common...)...)
+		return append([]string{"j/k", "finding", "enter", "go to line", "c", "draft comment"}, common...)
 	default:
-		return helpLine(append([]string{"j/k", "scroll"}, common...)...)
+		return append([]string{"j/k", "scroll"}, common...)
 	}
 }
 

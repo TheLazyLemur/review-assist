@@ -294,6 +294,10 @@ func (m *Model) agentView(w, h int) string {
 }
 
 func (m *Model) agentIntro(w int) string {
+	return m.markdown(m.agentIntroMarkdown(), min(w-4, 110))
+}
+
+func (m *Model) agentIntroMarkdown() string {
 	var s strings.Builder
 	s.WriteString("# Agent review\n\n")
 	s.WriteString("Press **A** (or enter) to run a review with **" + m.deps.ModelName + "**.\n\n")
@@ -302,7 +306,7 @@ func (m *Model) agentIntro(w int) string {
 	for _, l := range review.Levels {
 		fmt.Fprintf(&s, "| %d %s | %d | %s |\n", int(l), l, l.Agents(m.pr.data.Files, false), levelBlurb(l))
 	}
-	return m.markdown(s.String(), min(w-4, 110))
+	return s.String()
 }
 
 func (m *Model) findingsView(r *agentRun, w, h int) string {
