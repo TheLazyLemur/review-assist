@@ -138,12 +138,16 @@ func parse(raw []byte) (review.FileJudgement, error) {
 		return review.FileJudgement{}, fmt.Errorf("typesafe: kind answer %q is not one of the options", kind)
 	}
 	j := review.FileJudgement{Kind: kind}
-	for name, dst := range map[string]*float64{"central": &j.Central, "contract": &j.Contract, "described": &j.Described} {
-		n := got.Answers[name].Noul
+	// A slice, not a map: the first missing answer named must not vary run to run.
+	for _, a := range []struct {
+		name string
+		dst  *float64
+	}{{"central", &j.Central}, {"contract", &j.Contract}, {"described", &j.Described}} {
+		n := got.Answers[a.name].Noul
 		if n == nil {
-			return review.FileJudgement{}, fmt.Errorf("typesafe: no answer to %s", name)
+			return review.FileJudgement{}, fmt.Errorf("typesafe: no answer to %s", a.name)
 		}
-		*dst = *n
+		*a.dst = *n
 	}
 	return j, nil
 }
