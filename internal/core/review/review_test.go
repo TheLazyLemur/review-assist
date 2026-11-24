@@ -73,7 +73,7 @@ func TestQuickReviewExploresWithReadToolsAndReturnsAnchoredSuggestions(t *testin
 		{Name: "submit_findings", Input: json.RawMessage(`{"findings":[{"path":"a.go","line":2,"side":"head","severity":"blocking","confidence":"high","title":"Division by zero","explanation":"Always panics.","suggested_comment":"This divides by zero."}]}`)},
 		{Name: "get_diff", Input: json.RawMessage(`{}`)}, // never reached: the agent run is done
 	}}
-	reviewer := review.NewService(agent, noCode{}, 5, 1)
+	reviewer := review.NewService(agent, noCode{}, nil, 5, 1)
 
 	// when
 	// ... a quick review runs

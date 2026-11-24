@@ -114,6 +114,7 @@ func writeExampleConfig(path string) error {
 	fc.ClaudeCode.Executable = ptr("claude")
 	fc.Bitbucket.Email = ptr("")
 	fc.Bitbucket.APIToken = ptr("")
+	fc.TypeSafe.APIKey = ptr("")
 	fc.Review.Concurrency = ptr(4)
 	fc.Review.MaxTurns = ptr(40)
 	data, err := json.MarshalIndent(fc, "", "  ")

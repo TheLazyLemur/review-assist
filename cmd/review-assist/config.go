@@ -35,6 +35,9 @@ type fileConfig struct {
 		Email    *string `json:"email"`
 		APIToken *string `json:"api_token"`
 	} `json:"bitbucket"`
+	TypeSafe struct {
+		APIKey *string `json:"api_key"`
+	} `json:"typesafe"`
 	Review struct {
 		Concurrency *int `json:"concurrency"`
 		MaxTurns    *int `json:"max_turns"`
@@ -85,6 +88,7 @@ func loadConfigFile(path string, cfg *config) error {
 	setIf(&cfg.claude.Executable, fc.ClaudeCode.Executable)
 	setIf(&cfg.bitbucket.email, fc.Bitbucket.Email)
 	setIf(&cfg.bitbucket.apiToken, fc.Bitbucket.APIToken)
+	setIf(&cfg.typesafeKey, fc.TypeSafe.APIKey)
 	setIf(&cfg.concurrency, fc.Review.Concurrency)
 	setIf(&cfg.maxTurns, fc.Review.MaxTurns)
 	return nil
@@ -96,7 +100,7 @@ func checkPrivate(path string, fc fileConfig) error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
-	secrets := []*string{fc.ClaudeCode.Token, fc.MessagesAPI.APIKey, fc.Bitbucket.APIToken}
+	secrets := []*string{fc.ClaudeCode.Token, fc.MessagesAPI.APIKey, fc.Bitbucket.APIToken, fc.TypeSafe.APIKey}
 	if !slices.ContainsFunc(secrets, func(s *string) bool { return s != nil && *s != "" }) {
 		return nil
 	}

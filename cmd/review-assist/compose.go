@@ -21,6 +21,7 @@ import (
 	"github.com/TheLazyLemur/review-assist/internal/adapters/gitrepo"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/messagesapi"
 	"github.com/TheLazyLemur/review-assist/internal/adapters/tui"
+	"github.com/TheLazyLemur/review-assist/internal/adapters/typesafe"
 	"github.com/TheLazyLemur/review-assist/internal/core/pr"
 	"github.com/TheLazyLemur/review-assist/internal/core/review"
 )
@@ -32,6 +33,7 @@ const (
 	defaultMessagesModel = "deepseek-v4.1-flash:cloud"
 
 	bitbucketAPI = "https://api.bitbucket.org/2.0"
+	typesafeAPI  = "https://api.typesafe.ai"
 )
 
 type config struct {
@@ -39,6 +41,7 @@ type config struct {
 	messages    messagesapi.Config
 	claude      claudecode.Config // WorkDir is set by run
 	bitbucket   bitbucketConfig
+	typesafeKey string // turns on Jev for reading orders; without it an agent orders the files and no diff goes to TypeSafe
 	maxTurns    int
 	concurrency int
 	target      string // optional PR argument
@@ -108,10 +111,15 @@ func run(args []string) error {
 		return err
 	}
 
+	var judge review.Judge
+	if cfg.typesafeKey != "" {
+		judge = typesafe.New(typesafe.Config{APIKey: cfg.typesafeKey, BaseURL: typesafeAPI})
+	}
 	prs := pr.NewService(host, repo)
 	reviews := review.NewService(
 		backend,
 		gitrepo.Source{Cwd: cwd, CacheDir: cache, BitbucketToken: cfg.bitbucket.apiToken},
+		judge,
 		cfg.maxTurns, cfg.concurrency,
 	)
 	app := tui.New(tui.Deps{
@@ -195,6 +203,7 @@ func parseConfig(args []string, getenv func(string) string, configFile string) (
 		"REVIEW_ASSIST_CLAUDE_TOKEN":        &cfg.claude.Token,
 		"REVIEW_ASSIST_BITBUCKET_EMAIL":     &cfg.bitbucket.email,
 		"REVIEW_ASSIST_BITBUCKET_API_TOKEN": &cfg.bitbucket.apiToken,
+		"REVIEW_ASSIST_TYPESAFE_API_KEY":    &cfg.typesafeKey,
 	} {
 		if v := getenv(env); v != "" {
 			*dst = v
@@ -227,7 +236,9 @@ The claude-code backend's token (from `+"`claude setup-token`"+`) is set only in
 the file (claude_code.token) or REVIEW_ASSIST_CLAUDE_TOKEN, never by flag.
 Bitbucket's Atlassian account email and API token are set the same way:
 bitbucket.email and bitbucket.api_token, or REVIEW_ASSIST_BITBUCKET_EMAIL and
-REVIEW_ASSIST_BITBUCKET_API_TOKEN.
+REVIEW_ASSIST_BITBUCKET_API_TOKEN. A TypeSafe API key (typesafe.api_key or
+REVIEW_ASSIST_TYPESAFE_API_KEY) has Jev judge each file for the reading order;
+without one an agent orders them.
 
 flags:
 `)

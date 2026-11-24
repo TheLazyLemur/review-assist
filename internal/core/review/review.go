@@ -38,21 +38,22 @@ type Result struct {
 	Notes      []string
 }
 
-// Service runs agent reviews. It depends only on its ports, and neither port
-// can post to the code host: agents suggest, the human posts.
+// Service runs agent reviews and reading orders. It depends only on its
+// ports, and none can post to the code host: agents suggest, the human posts.
 type Service struct {
 	backend     Backend
 	code        CodeSource
+	judge       Judge // nil without a TypeSafe key: an agent orders the files instead
 	maxTurns    int
 	concurrency int
 }
 
-func NewService(backend Backend, code CodeSource, maxTurns, concurrency int) *Service {
+func NewService(backend Backend, code CodeSource, judge Judge, maxTurns, concurrency int) *Service {
 	if backend == nil || code == nil || maxTurns < 4 || concurrency < 1 {
 		panic(fmt.Sprintf("review.NewService: bad wiring (backend=%v code=%v maxTurns=%d concurrency=%d)",
 			backend != nil, code != nil, maxTurns, concurrency))
 	}
-	return &Service{backend: backend, code: code, maxTurns: maxTurns, concurrency: concurrency}
+	return &Service{backend: backend, code: code, judge: judge, maxTurns: maxTurns, concurrency: concurrency}
 }
 
 // Review opens the PR's code and runs the review at the given level.

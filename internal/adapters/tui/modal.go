@@ -221,7 +221,7 @@ func newHelp(s screen, p *prModel) *helpModal {
 	} else {
 		sections = append(sections,
 			[]string{"PR", "1 2 3 / tab", "overview, diff, agent", "a", "approve", "x", "request changes", "C", "PR-level comment", "m", "all actions (merge, close, draft, checkout…)", "A", "run / cancel agent review", "r", "refresh", "o", "open in browser"},
-			[]string{"Diff", "j / k", "next / previous line", "] / [", "next / previous file", "} / {", "next / previous hunk", "h / l", "scroll left / right", "0", "reset horizontal scroll", "f", "file list on/off", "c", "comment on line (or selection)", "v / V", "start visual selection", "F", "comment on whole file", "R", "reply to thread on line", "D", "delete my comment on line", "t", "show/hide comments", "n / N", "next / previous agent finding"},
+			[]string{"Diff", "j / k", "next / previous line", "] / [", "next / previous file", "O", "reading order: ask, toggle, cancel", "} / {", "next / previous hunk", "h / l", "scroll left / right", "0", "reset horizontal scroll", "f", "file list on/off", "c", "comment on line (or selection)", "v / V", "start visual selection", "F", "comment on whole file", "R", "reply to thread on line", "D", "delete my comment on line", "t", "show/hide comments", "n / N", "next / previous agent finding"},
 			[]string{"Agent", "j / k", "select finding", "enter", "jump to line in diff", "c", "draft a comment from the suggestion (you edit and post it)", "ctrl+d / ctrl+u", "scroll the explanation"},
 		)
 	}

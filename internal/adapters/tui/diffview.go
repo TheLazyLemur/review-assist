@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -89,6 +90,9 @@ func (m *Model) buildRows(width int) {
 	findings := m.findingsAt(f.Path())
 	noteW := max(width-14, 20)
 
+	if s, ok := p.step(f.Path()); ok {
+		p.rows = append(p.rows, diffRow{kind: rowNote, text: stepNote(s, noteW)})
+	}
 	if !p.hideComments {
 		for _, c := range fileLevel {
 			p.rows = append(p.rows, diffRow{kind: rowNote, text: commentNote(c, noteW, "file")})
@@ -172,6 +176,9 @@ func (p *prModel) selectFile(i int) {
 	}
 	p.fileIdx, p.cursor, p.scroll, p.xoff = i, 0, 0, 0
 	p.selecting = false
+	if p.order != nil && p.order.shown {
+		p.order.seen[p.data.Files[i].Path()] = true
+	}
 	p.rows = nil
 }
 
@@ -212,9 +219,11 @@ func (m *Model) updateDiff(key string) tea.Cmd {
 		p.cursor = len(p.rows) - 1
 		p.snapCursor(-1)
 	case "]", "J":
-		p.selectFile(p.fileIdx + 1)
+		p.stepFile(1)
 	case "[", "K":
-		p.selectFile(p.fileIdx - 1)
+		p.stepFile(-1)
+	case "O":
+		return m.readingOrderKey()
 	case "}":
 		p.jumpHunk(1)
 	case "{":
@@ -478,7 +487,7 @@ func (m *Model) diffView(w, h int) string {
 
 	header := fmt.Sprintf(" %s  %s %s  %s", titleStyle.Render(f.Path()),
 		addStyle.Render(fmt.Sprintf("+%d", f.Additions)), delStyle.Render(fmt.Sprintf("-%d", f.Deletions)),
-		faintStyle.Render(fmt.Sprintf("file %d/%d", p.fileIdx+1, len(p.data.Files))))
+		faintStyle.Render(fmt.Sprintf("file %d/%d", slices.Index(p.fileOrder(), p.fileIdx)+1, len(p.data.Files))))
 	if f.OldPath != "" && f.OldPath != f.NewPath && !f.Deleted {
 		header += faintStyle.Render("  renamed from " + f.OldPath)
 	}
@@ -553,7 +562,13 @@ func (m *Model) sidebar(h int) string {
 	p := m.pr
 	w := sidebarWidth - 1
 	var lines []string
-	lines = append(lines, faintStyle.Render(fit(fmt.Sprintf(" Files (%d)", len(p.data.Files)), w)))
+	if s := m.orderRunning(); s != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(orange).Render(fit(" "+m.spinner.View()+s, w)))
+	} else if p.order != nil && p.order.shown {
+		lines = append(lines, fit(p.orderHeader(), w))
+	} else {
+		lines = append(lines, faintStyle.Render(fit(fmt.Sprintf(" Files (%d)", len(p.data.Files)), w)))
+	}
 	findingCount := map[string]int{}
 	if r := m.agentRunFor(p.number); r != nil && r.result != nil {
 		for _, f := range r.result.Findings {
@@ -566,9 +581,15 @@ func (m *Model) sidebar(h int) string {
 			commentCount[c.Anchor.Path]++
 		}
 	}
-	start := max(p.fileIdx-(h-3)/2, 0)
-	for i := start; i < min(len(p.data.Files), start+h-1); i++ {
+	idx := p.fileOrder()
+	start := max(slices.Index(idx, p.fileIdx)-(h-3)/2, 0)
+	for k := start; k < min(len(idx), start+h-1); k++ {
+		i := idx[k]
 		f := p.data.Files[i]
+		lead := " "
+		if s, ok := p.step(f.Path()); ok {
+			lead = fmt.Sprintf(" %d %s ", k+1, tierGlyph[s.Tier])
+		}
 		badge := ""
 		if n := commentCount[f.Path()]; n > 0 {
 			badge += lipgloss.NewStyle().Foreground(orange).Render(fmt.Sprintf(" ┃%d", n))
@@ -576,11 +597,14 @@ func (m *Model) sidebar(h int) string {
 		if n := findingCount[f.Path()]; n > 0 {
 			badge += lipgloss.NewStyle().Foreground(red).Render(fmt.Sprintf(" ◆%d", n))
 		}
-		name := shortPath(f.Path(), w-ansi.StringWidth(badge)-2)
+		name := shortPath(f.Path(), w-ansi.StringWidth(badge)-ansi.StringWidth(lead)-1)
+		if p.order != nil && p.order.shown && p.order.seen[f.Path()] && i != p.fileIdx {
+			name = faintStyle.Render(name)
+		}
 		if i == p.fileIdx {
-			lines = append(lines, fit(selectedStyle.Render(" "+name)+badge, w))
+			lines = append(lines, fit(selectedStyle.Render(lead+name)+badge, w))
 		} else {
-			lines = append(lines, fit(" "+name+badge, w))
+			lines = append(lines, fit(lead+name+badge, w))
 		}
 	}
 	return strings.Join(lines, "\n")
