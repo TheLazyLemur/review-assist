@@ -176,6 +176,9 @@ func (p *prModel) selectFile(i int) {
 	}
 	p.fileIdx, p.cursor, p.scroll, p.xoff = i, 0, 0, 0
 	p.selecting = false
+	if p.order != nil && p.order.shown {
+		p.order.seen[p.data.Files[i].Path()] = true
+	}
 	p.rows = nil
 }
 
@@ -561,6 +564,8 @@ func (m *Model) sidebar(h int) string {
 	var lines []string
 	if s := m.orderRunning(); s != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(orange).Render(fit(" "+m.spinner.View()+s, w)))
+	} else if p.order != nil && p.order.shown {
+		lines = append(lines, fit(p.orderHeader(), w))
 	} else {
 		lines = append(lines, faintStyle.Render(fit(fmt.Sprintf(" Files (%d)", len(p.data.Files)), w)))
 	}
@@ -593,6 +598,9 @@ func (m *Model) sidebar(h int) string {
 			badge += lipgloss.NewStyle().Foreground(red).Render(fmt.Sprintf(" ◆%d", n))
 		}
 		name := shortPath(f.Path(), w-ansi.StringWidth(badge)-ansi.StringWidth(lead)-1)
+		if p.order != nil && p.order.shown && p.order.seen[f.Path()] && i != p.fileIdx {
+			name = faintStyle.Render(name)
+		}
 		if i == p.fileIdx {
 			lines = append(lines, fit(selectedStyle.Render(lead+name)+badge, w))
 		} else {

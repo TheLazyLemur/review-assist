@@ -258,3 +258,21 @@ func TestAFailedReadingOrderShowsItsErrorAndKeepsPathOrder(t *testing.T) {
 		t.Errorf("sidebar: %q", got)
 	}
 }
+
+func TestTheFileListHeaderCountsFilesSeenAndLinesToReadPerTier(t *testing.T) {
+	// given
+	// ... a reading order of c.go to read, a.go to skim and b.go to skip, opened at c.go
+	m := diffTabWith(cOrder())
+	press(m, "O")
+
+	// when
+	// ... ] moves on to a.go
+	press(m, "]")
+
+	// then
+	// ... the header says one of one read file and one of one skim file seen, with their changed lines, and no skip file seen
+	head := strings.SplitN(ansi.Strip(m.sidebar(20)), "\n", 2)[0]
+	if got, want := strings.TrimSpace(head), "● 1/1 1L  ◐ 1/1 1L  · 0/1"; got != want {
+		t.Errorf("file list header: %q, want %q", got, want)
+	}
+}

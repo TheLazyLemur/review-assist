@@ -23,7 +23,8 @@ type readingOrder struct {
 	progress string // the last file judged or tool called
 	steps    []review.ReadingStep
 	shown    bool
-	unseen   bool // arrived while another tab was open
+	unseen   bool            // arrived while another tab was open
+	seen     map[string]bool // files opened while the order was shown
 }
 
 // The messages carry their order, so a cancelled or replaced order is ignored.
@@ -56,7 +57,7 @@ func (m *Model) readingOrderKey() tea.Cmd {
 		return m.setStatus("path order (O for the reading order)", false)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	o := &readingOrder{cancel: cancel, ch: make(chan tea.Msg, 64), started: time.Now(), running: true}
+	o := &readingOrder{cancel: cancel, ch: make(chan tea.Msg, 64), started: time.Now(), running: true, seen: map[string]bool{}}
 	p.order = o
 	reviews, repo, details := m.deps.Reviews, m.deps.PRs.Repo(), p.data
 	go func() {
@@ -181,6 +182,30 @@ func (p *prModel) step(path string) (review.ReadingStep, bool) {
 		return review.ReadingStep{}, false
 	}
 	return p.order.steps[i], true
+}
+
+// orderHeader is the file list header while the order is shown: per tier,
+// files seen of files, and the lines read and skim files change.
+func (p *prModel) orderHeader() string {
+	type tally struct{ seen, files, lines int }
+	t := map[review.Tier]*tally{review.TierRead: {}, review.TierSkim: {}, review.TierSkip: {}}
+	for _, s := range p.order.steps {
+		i := slices.IndexFunc(p.data.Files, func(f diff.File) bool { return f.Path() == s.Path })
+		if i < 0 {
+			continue // gone in a later push
+		}
+		c := t[s.Tier]
+		c.files++
+		c.lines += p.data.Files[i].Additions + p.data.Files[i].Deletions
+		if p.order.seen[s.Path] {
+			c.seen++
+		}
+	}
+	r, k, x := t[review.TierRead], t[review.TierSkim], t[review.TierSkip]
+	return fmt.Sprintf(" %s %d/%d %dL  %s %d/%d %dL  %s %d/%d",
+		tierGlyph[review.TierRead], r.seen, r.files, r.lines,
+		tierGlyph[review.TierSkim], k.seen, k.files, k.lines,
+		tierGlyph[review.TierSkip], x.seen, x.files)
 }
 
 var tierGlyph = map[review.Tier]string{
